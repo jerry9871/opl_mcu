@@ -9,6 +9,7 @@
       pre2       -- Prehistorik 2 title music  (~102 KB flash, looping)
       ww_intro   -- Wacky Wheels intro         (~6  KB flash)
       ww_theme   -- Wacky Wheels theme         (~26 KB flash)
+      doom       -- DOOM setup utility music   (~86 KB flash, looping)
 
     Build (MinGW gcc): see Makefile / build.bat.
 
@@ -30,6 +31,7 @@
 #include "pre2_loop_song.h"
 #include "ww_intro_song.h"
 #include "ww_theme_song.h"
+#include "doom_setup_song.h"
 
 /* alternate built-in song (test_melody.c) */
 extern const opl_event opl_demo_melody[];
@@ -63,6 +65,10 @@ static const song_t SONGS[] = {
 		"ww_theme", "Wacky Wheels theme",
 		ww_theme_song,   0, 1
 	},
+	{
+		"doom",     "DOOM setup music",
+		opl_doom_setup_song, 0, 1
+	},
 };
 #define N_SONGS ((int)(sizeof(SONGS)/sizeof(SONGS[0])))
 
@@ -86,6 +92,7 @@ main(int argc, char** argv)
 	songs[1].count  = pre2_loop_song_count;
 	songs[2].count  = ww_intro_song_count;
 	songs[3].count  = ww_theme_song_count;
+	songs[4].count  = opl_doom_setup_song_count;
 
 	int loop_explicit = -1;          /* -1 = use song's default */
 	const char* arg   = NULL;        /* song name OR .dro path  */

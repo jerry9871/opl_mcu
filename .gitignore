@@ -10,6 +10,7 @@ opl_demo.exe
 *.ilk
 
 # DOSBox capture artifacts
+capture/*.dro
 capture/*.dro.hs
 capture/*.song
 capture/*.song.hs
@@ -19,6 +20,7 @@ capture/*.png
 # Game files (proprietary — provide your own copy)
 preh2/
 wacky/
+doom/
 
 # Editor / OS
 .vscode/
