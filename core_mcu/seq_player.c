@@ -52,6 +52,8 @@ static struct fifo        g_fifo;
 static int16_t            g_last_l;     /* last popped frame, used to   */
 static int16_t            g_last_r;     /* hold output on underrun      */
 
+static seq_key_cb         g_key_cb;     /* optional LED visualizer hook */
+
 /*  ====================================================================
     One-time initialization
     ==================================================================== */
@@ -70,6 +72,13 @@ synth_init(uint32_t sample_rate_hz)
 	fifo_init(&g_fifo, SYNTH_FIFO_BYTES);
 	g_last_l = 0;
 	g_last_r = 0;
+	/* g_key_cb is preserved across re-init so callers can install once */
+}
+
+void
+seq_set_key_cb(seq_key_cb cb)
+{
+	g_key_cb = cb;
 }
 
 /*  ====================================================================
@@ -142,6 +151,14 @@ seq_tick(uint32_t ms_elapsed)
 
 		const opl_event* e = &g_events[g_pos++];
 		OPL3_WriteRegBuffered(&g_chip, e->reg, e->val);
+
+		/* Visualizer hook: report rhythm-mode percussion strike bits. */
+		if (g_key_cb && (e->reg & 0xff) >= 0xB0 && (e->reg & 0xff) <= 0xB8)
+			g_key_cb(e->val & 0x1f);
+
+		//another variant?
+		//g_key_cb((e->val & 0x20) ? 1 : 0);
+
 		g_due_ms += (int32_t)e->delay_ms;
 	}
 }

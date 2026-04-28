@@ -110,6 +110,13 @@ void seq_silence(void);
 /* Returns non-zero while a song is still playing. */
 int  seq_is_playing(void);
 
+/*  Optional percussion-strike hook.  Called from seq_tick() context for
+    every write to OPL register 0xBD (rhythm mode); `perc` carries the
+    low 5 strike bits (bd/sd/tom/tc/hh).  Useful to drive a visualizer
+    LED.  Pass NULL to disable. */
+typedef void (*seq_key_cb)(uint8_t perc);
+void seq_set_key_cb(seq_key_cb cb);
+
 /* ---- real-time entry points ----------------------------------------- */
 
 /*  Advance the sequencer by `ms_elapsed` milliseconds and dispatch any
