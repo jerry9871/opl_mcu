@@ -94,7 +94,7 @@ extern "C" {
     active-slot walker.  Register writes still go through normally so the
     sequencer state stays consistent.  Set to 18 to disable the cap. */
 #ifndef OPL_MAX_CHANNELS
-#define OPL_MAX_CHANNELS 7
+#define OPL_MAX_CHANNELS 9
 #endif
 
 /*  OPT: OPL2-only build.  Forces chip->newm=0 (no 4-op pairing, only
