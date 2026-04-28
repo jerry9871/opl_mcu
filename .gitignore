@@ -1,0 +1,33 @@
+# Build outputs
+opl_demo.exe
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.pdb
+*.ilk
+
+# DOSBox capture artifacts
+capture/*.dro.hs
+capture/*.song
+capture/*.song.hs
+capture/*.wav
+capture/*.png
+
+# Game files (proprietary — provide your own copy)
+preh2/
+wacky/
+
+# Editor / OS
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Memory / debug logs
+/memories/
