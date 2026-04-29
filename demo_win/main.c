@@ -43,31 +43,32 @@ extern const uint32_t  opl_demo_melody_count;
 typedef struct {
 	const char*       name;
 	const char*       desc;
-	const opl_event*  events;
+	const opl_event*  events;       /* set for legacy MODE_EVENTS songs */
 	uint32_t          count;
+	const opl_song*   song;         /* set for packed MODE_PACKED songs */
 	int               default_loop;
 } song_t;
 
 static const song_t SONGS[] = {
 	{
 		"melody",   "\"Ode to Joy\" (Beethoven, PD)",
-		/* events */ NULL, /* count */ 0, /* loop */ 0
+		/*events*/ NULL, /*count*/ 0, /*song*/ NULL, /*loop*/ 0
 	},   /* patched at runtime */
 	{
 		"pre2",     "Prehistorik 2 title",
-		pre2_loop_song,  0, 1
-	},                            /* count patched below */
+		NULL, 0, &pre2_loop_song,    1
+	},
 	{
 		"ww_intro", "Wacky Wheels intro",
-		ww_intro_song,   0, 0
+		NULL, 0, &ww_intro_song,     0
 	},
 	{
 		"ww_theme", "Wacky Wheels theme",
-		ww_theme_song,   0, 1
+		NULL, 0, &ww_theme_song,     1
 	},
 	{
 		"doom",     "DOOM setup music",
-		opl_doom_setup_song, 0, 1
+		NULL, 0, &opl_doom_setup_song, 1
 	},
 };
 #define N_SONGS ((int)(sizeof(SONGS)/sizeof(SONGS[0])))
@@ -84,15 +85,11 @@ list_songs(void)
 int
 main(int argc, char** argv)
 {
-	/* Patch in the counts that aren't compile-time constants here. */
+	/* Patch in the dynamic fields that aren't compile-time constants. */
 	song_t songs[N_SONGS];
 	memcpy(songs, SONGS, sizeof(songs));
 	songs[0].events = opl_demo_melody;
-	songs[0].count = opl_demo_melody_count;
-	songs[1].count  = pre2_loop_song_count;
-	songs[2].count  = ww_intro_song_count;
-	songs[3].count  = ww_theme_song_count;
-	songs[4].count  = opl_doom_setup_song_count;
+	songs[0].count  = opl_demo_melody_count;
 
 	int loop_explicit = -1;          /* -1 = use song's default */
 	const char* arg   = NULL;        /* song name OR .dro path  */
@@ -162,18 +159,26 @@ main(int argc, char** argv)
 	synth_init(SAMPLE_RATE);
 
 	opl_event* dro_events = NULL;    /* owned only when a .dro is used */
+	opl_song   dro_song   = {0};
+	int        dro_song_loaded = 0;
 
 	if (dro) {
-		uint32_t n, ms;
-
-		if (dro_load(dro, &dro_events, &n, &ms) != 0) {
+		if (dro_load(dro, &dro_song) != 0) {
 			audio_close();
 			return 1;
 		}
 
-		printf("  song        : %s (%u events, %u ms)\n", dro, n, ms);
+		dro_song_loaded = 1;
+		printf("  song        : %s (%u bytes packed, %u ms)\n",
+			   dro, dro_song.data_len, dro_song.total_ms);
 		printf("  loop        : %s\n", loop ? "yes (Ctrl+C to stop)" : "no");
-		seq_play(dro_events, n, loop);
+		seq_play_song(&dro_song, loop);
+
+	} else if (picked->song) {
+		printf("  song        : %s (%s, %u bytes packed)\n",
+			   picked->name, picked->desc, picked->song->data_len);
+		printf("  loop        : %s\n", loop ? "yes (Ctrl+C to stop)" : "no");
+		seq_play_song(picked->song, loop);
 
 	} else {
 		printf("  song        : %s (%s, %u events)\n",
@@ -209,6 +214,10 @@ main(int argc, char** argv)
 
 	audio_close();
 	free(dro_events);
+
+	if (dro_song_loaded)
+		dro_song_free(&dro_song);
+
 	printf("Done.\n");
 	return 0;
 }

@@ -28,9 +28,20 @@
 /* ---- module state --------------------------------------------------- */
 
 static opl3_chip          g_chip;       /* the OPL3 emulator instance   */
-static const opl_event*   g_events;     /* current song (caller-owned)  */
-static uint32_t           g_count;      /* number of events in g_events */
-static uint32_t           g_pos;        /* index of next event to fire  */
+
+/*  The player can be driven from one of two song forms; we keep both
+    state slots and a mode discriminator rather than a tagged union so
+    seq_play() and seq_play_song() can be called freely. */
+enum { MODE_NONE = 0, MODE_EVENTS = 1, MODE_PACKED = 2 };
+static uint8_t            g_mode;
+
+static const opl_event*   g_events;     /* MODE_EVENTS song (caller-owned) */
+static uint32_t           g_count;
+static uint32_t           g_pos;
+
+static const opl_song*    g_song;       /* MODE_PACKED song (caller-owned) */
+static uint32_t           g_ppos;       /* byte offset into song->data, after codemap */
+
 static int32_t            g_due_ms;     /* ms until next event fires    */
 static uint8_t            g_loop;       /* 1 = restart at end           */
 static uint8_t            g_playing;    /* 1 while sequencer is active  */
@@ -62,9 +73,12 @@ void
 synth_init(uint32_t sample_rate_hz)
 {
 	OPL3_Reset(&g_chip, sample_rate_hz);
+	g_mode    = MODE_NONE;
 	g_events  = 0;
 	g_count   = 0;
 	g_pos     = 0;
+	g_song    = 0;
+	g_ppos    = 0;
 	g_due_ms  = 0;
 	g_loop    = 0;
 	g_playing = 0;
@@ -88,12 +102,24 @@ seq_set_key_cb(seq_key_cb cb)
 void
 seq_play(const opl_event* events, uint32_t count, int loop)
 {
+	g_mode    = MODE_EVENTS;
 	g_events  = events;
 	g_count   = count;
 	g_pos     = 0;
 	g_due_ms  = 0;
 	g_loop    = loop ? 1 : 0;
 	g_playing = (events && count) ? 1 : 0;
+}
+
+void
+seq_play_song(const opl_song* song, int loop)
+{
+	g_mode    = MODE_PACKED;
+	g_song    = song;
+	g_ppos    = song ? song->codemap_len : 0;
+	g_due_ms  = 0;
+	g_loop    = loop ? 1 : 0;
+	g_playing = (song && song->data && song->data_len > song->codemap_len) ? 1 : 0;
 }
 
 void
@@ -136,30 +162,65 @@ seq_tick(uint32_t ms_elapsed)
 	     2) ms_elapsed could exceed a single event's delay if the
 	        caller ticks at a coarser cadence than the song's finest
 	        grain. */
-	while (g_due_ms <= 0) {
-		if (g_pos >= g_count) {
-			if (g_loop) {
-				g_pos    = 0;
-				g_due_ms = 0;
-				continue;
+	if (g_mode == MODE_EVENTS) {
+		while (g_due_ms <= 0) {
+			if (g_pos >= g_count) {
+				if (g_loop) {
+					g_pos    = 0;
+					g_due_ms = 0;
+					continue;
 
-			} else {
-				g_playing = 0;
-				return;
+				} else {
+					g_playing = 0;
+					return;
+				}
 			}
+
+			const opl_event* e = &g_events[g_pos++];
+			OPL3_WriteRegBuffered(&g_chip, e->reg, e->val);
+
+			/* Visualizer hook: report rhythm-mode percussion strike bits. */
+			if (g_key_cb && (e->reg & 0xff) >= 0xB0 && (e->reg & 0xff) <= 0xB8)
+				g_key_cb(e->val & 0x1f);
+
+			g_due_ms += (int32_t)e->delay_ms;
 		}
 
-		const opl_event* e = &g_events[g_pos++];
-		OPL3_WriteRegBuffered(&g_chip, e->reg, e->val);
+	} else {
+		/* MODE_PACKED: walk the (code,val) opcode stream */
+		const opl_song* s = g_song;
 
-		/* Visualizer hook: report rhythm-mode percussion strike bits. */
-		if (g_key_cb && (e->reg & 0xff) >= 0xB0 && (e->reg & 0xff) <= 0xB8)
-			g_key_cb(e->val & 0x1f);
+		while (g_due_ms <= 0) {
+			if (g_ppos >= s->data_len) {
+				if (g_loop) {
+					g_ppos   = s->codemap_len;
+					g_due_ms = 0;
+					continue;
 
-		//another variant?
-		//g_key_cb((e->val & 0x20) ? 1 : 0);
+				} else {
+					g_playing = 0;
+					return;
+				}
+			}
 
-		g_due_ms += (int32_t)e->delay_ms;
+			uint8_t code = s->data[g_ppos++];
+			uint8_t val  = s->data[g_ppos++];
+
+			if (code == s->short_code)
+				g_due_ms += (int32_t)val + 1;
+
+			else if (code == s->long_code)
+				g_due_ms += ((int32_t)val + 1) * 256;
+
+			else {
+				uint16_t reg = (uint16_t)s->data[code & 0x7F]
+							   | ((code & 0x80) ? 0x100 : 0);
+				OPL3_WriteRegBuffered(&g_chip, reg, val);
+
+				if (g_key_cb && (reg & 0xff) >= 0xB0 && (reg & 0xff) <= 0xB8)
+					g_key_cb(val & 0x1f);
+			}
+		}
 	}
 }
 

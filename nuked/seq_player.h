@@ -51,6 +51,30 @@ typedef struct {
 	uint16_t delay_ms;
 } opl_event;
 
+/*  Packed/compact song format (~2 bytes per register write, mirrors the
+    DRO v2 wire format).  Use this for big captured songs where the
+    6-byte opl_event struct is wasteful.
+
+    Layout of `data[]`:
+      - first `codemap_len` bytes: a code -> OPL register-low-byte map.
+        A code C in the opcode stream resolves to register address
+          codemap[C & 0x7F] | ((C & 0x80) ? 0x100 : 0)        (high bit of C selects the OPL3 second port).
+      - the rest:  (code, val) pairs.
+          code == short_code  ->  delay = val + 1   ms
+          code == long_code   ->  delay = (val+1)*256 ms
+          else                ->  write `val` to the register decoded above
+
+    Example footprint comparison (DOOM setup music, ~14.7k events):
+      opl_event[]:  ~88 KB    packed opl_song:  ~35 KB. */
+typedef struct {
+	const uint8_t* data;        /* codemap (codemap_len bytes) + opcode stream */
+	uint32_t       data_len;    /* total bytes in `data[]`                     */
+	uint16_t       codemap_len; /* number of codemap entries (<= 128)          */
+	uint8_t        short_code;  /* opcode value used for short delays          */
+	uint8_t        long_code;   /* opcode value used for long delays           */
+	uint32_t       total_ms;    /* nominal song length, for diagnostics        */
+} opl_song;
+
 /* ---- one-time initialization ---- */
 
 /*  Initialize the OPL3 synth and the player state.
@@ -62,6 +86,10 @@ void synth_init(uint32_t sample_rate_hz);
 
 /* Begin playback of a static song.  loop != 0 means restart at end. */
 void seq_play(const opl_event* events, uint32_t count, int loop);
+
+/*  Begin playback of a packed song (typically from a generated header).
+    Same semantics as seq_play() but uses the compact format above. */
+void seq_play_song(const opl_song* song, int loop);
 
 /*  Stop playback.  Existing OPL register state is left as-is so any
     still-sounding notes will release naturally; call seq_silence() to
