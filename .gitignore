@@ -20,7 +20,7 @@ capture/*.png
 # Game files (proprietary — provide your own copy)
 preh2/
 wacky/
-doom/
+games/
 
 # Editor / OS
 .vscode/

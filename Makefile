@@ -3,7 +3,7 @@
 # Project layout:
 #   nuked/             - Nuked-OPL3 reference port (portable, bit-exact)
 #   nuked_optimized/   - MCU-optimized variant of the Nuked port
-#   songs/             - embedded songs (static const opl_event arrays)
+#   songs/             - embedded songs (packed opl_song format)
 #   demo_win/          - Windows demo wrapper (main + WinMM audio sink)
 #   tools/             - offline DRO -> .h converter and analysis utilities
 #   capture/           - DRO captures (DOSBox output)
@@ -22,7 +22,7 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=c99 -I$(CORE) -Isongs -Idemo_win
 LDLIBS  ?= -lwinmm
 
 # Portable layer (the only files that go on the MCU):
-CORE_SRC = $(CORE)/opl3.c $(CORE)/seq_player.c songs/test_melody.c
+CORE_SRC = $(CORE)/opl3.c $(CORE)/seq_player.c
 # Windows-only wrapper:
 PC_SRC   = demo_win/main.c demo_win/audio_win.c demo_win/dro_load.c
 

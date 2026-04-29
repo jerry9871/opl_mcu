@@ -3,10 +3,11 @@
 
     What this module does
     ---------------------
-    Plays a statically-compiled stream of OPL register-write events
-    (`opl_event[]`) through the bundled Nuked-OPL3 emulator and exposes
-    the rendered audio one stereo PCM frame at a time.  No malloc, no
-    stdio, no FILE*, no float math.  One global chip + one current song.
+    Plays a statically-compiled stream of OPL register writes
+    (`opl_song`, packed DRO v2 wire format) through the bundled
+    Nuked-OPL3 emulator and exposes the rendered audio one stereo PCM
+    frame at a time.  No malloc, no stdio, no FILE*, no float math.
+    One global chip + one current song.
 
     Pipeline
     --------
@@ -31,7 +32,7 @@
     --------------
         // boot
         synth_init(SAMPLE_RATE_HZ);
-        seq_play(my_song, ARRAY_SIZE(my_song), 1);  // loop
+        seq_play_song(&my_song, 1);  // loop
 
         // 1 ms periodic context (SysTick / RTOS task)
         seq_tick(1);
@@ -46,7 +47,7 @@
         opl3.c           the synthesizer
         seq_player.c     this player + FIFO glue
         fifo.c           generic byte FIFO from lib/_LIB
-        <song_data>.h    your embedded opl_event[] (e.g. ww_theme_song.h)
+        <song_data>.h    your embedded opl_song (e.g. ww_theme_song.h)
 
     Threading
     ---------
@@ -68,24 +69,8 @@
 extern "C" {
 #endif
 
-/*  One OPL register-write event with the delay that follows it.
-
-     reg      : OPL register address (low 9 bits).
-                Bit 8 (i.e. value >= 0x100) addresses the OPL3 second port.
-     val      : 8-bit value to write to that register.
-     delay_ms : milliseconds to wait AFTER this write, before the next one.
-
-    sizeof(opl_event) == 6 bytes (4 with #pragma pack on most ABIs).
-*/
-typedef struct {
-	uint16_t reg;
-	uint8_t  val;
-	uint16_t delay_ms;
-} opl_event;
-
 /*  Packed/compact song format (~2 bytes per register write, mirrors the
-    DRO v2 wire format).  Use this for big captured songs where the
-    6-byte opl_event struct is wasteful.
+    DRO v2 wire format).
 
     Layout of `data[]`:
       - first `codemap_len` bytes: a code -> OPL register-low-byte map.
@@ -96,9 +81,7 @@ typedef struct {
           code == short_code  ->  delay = val + 1   ms
           code == long_code   ->  delay = (val+1)*256 ms
           else                ->  write `val` to the register decoded above
-
-    Example footprint comparison (DOOM setup music, ~14.7k events):
-      opl_event[]:  ~88 KB    packed opl_song:  ~35 KB. */
+*/
 typedef struct {
 	const uint8_t* data;        /* codemap (codemap_len bytes) + opcode stream */
 	uint32_t       data_len;    /* total bytes in `data[]`                     */
@@ -118,12 +101,8 @@ void synth_init(uint32_t sample_rate_hz);
 
 /* ---- sequence control ----------------------------------------------- */
 
-/*  Begin playback of a static song (typically a const array embedded
-    from a generated header).  `loop != 0` restarts at the end. */
-void seq_play(const opl_event* events, uint32_t count, int loop);
-
 /*  Begin playback of a packed song (typically from a generated header).
-    Same semantics as seq_play() but uses the compact opl_song format. */
+    `loop != 0` restarts at the end. */
 void seq_play_song(const opl_song* song, int loop);
 
 /*  Stop advancing the sequencer.  Existing OPL register state is left

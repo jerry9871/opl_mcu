@@ -24,8 +24,6 @@
         opl3.c           (the synthesizer)
         seq_player.c     (this player)
         <song_data>.h    (your embedded sequence, e.g. pre2_loop_song.h)
-
-    No malloc, no stdio, no FILE*, no float math.
 */
 #ifndef SEQ_PLAYER_H
 #define SEQ_PLAYER_H
@@ -36,36 +34,19 @@
 extern "C" {
 #endif
 
-/*  One OPL register-write event with the delay that follows it.
-
-     reg      : OPL register address (low 9 bits).
-                Bit 8 (i.e. value >= 0x100) addresses the OPL3 second port.
-     val      : 8-bit value to write to that register.
-     delay_ms : milliseconds to wait AFTER this write, before the next one.
-
-    sizeof(opl_event) == 6 bytes (4 with #pragma pack on most ABIs).
-*/
-typedef struct {
-	uint16_t reg;
-	uint8_t  val;
-	uint16_t delay_ms;
-} opl_event;
-
 /*  Packed/compact song format (~2 bytes per register write, mirrors the
-    DRO v2 wire format).  Use this for big captured songs where the
-    6-byte opl_event struct is wasteful.
+    DRO v2 wire format).
 
     Layout of `data[]`:
       - first `codemap_len` bytes: a code -> OPL register-low-byte map.
         A code C in the opcode stream resolves to register address
-          codemap[C & 0x7F] | ((C & 0x80) ? 0x100 : 0)        (high bit of C selects the OPL3 second port).
+          codemap[C & 0x7F] | ((C & 0x80) ? 0x100 : 0)
+        (high bit of C selects the OPL3 second port).
       - the rest:  (code, val) pairs.
           code == short_code  ->  delay = val + 1   ms
           code == long_code   ->  delay = (val+1)*256 ms
           else                ->  write `val` to the register decoded above
-
-    Example footprint comparison (DOOM setup music, ~14.7k events):
-      opl_event[]:  ~88 KB    packed opl_song:  ~35 KB. */
+*/
 typedef struct {
 	const uint8_t* data;        /* codemap (codemap_len bytes) + opcode stream */
 	uint32_t       data_len;    /* total bytes in `data[]`                     */
@@ -84,11 +65,8 @@ void synth_init(uint32_t sample_rate_hz);
 
 /* ---- sequence control ---- */
 
-/* Begin playback of a static song.  loop != 0 means restart at end. */
-void seq_play(const opl_event* events, uint32_t count, int loop);
-
 /*  Begin playback of a packed song (typically from a generated header).
-    Same semantics as seq_play() but uses the compact format above. */
+    loop != 0 means restart at end. */
 void seq_play_song(const opl_song* song, int loop);
 
 /*  Stop playback.  Existing OPL register state is left as-is so any

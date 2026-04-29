@@ -10,12 +10,13 @@ your PC is what your MCU will play.
 > Sound Blaster 16 / AdLib Gold) is a beautiful piece of late-80s
 > hardware whose music â€” fast attack envelopes, gritty FM timbres, that
 > distinctive ~50 kHz sample rate â€” is impossible to reproduce
-> convincingly with any other technique. With ~100 KB of flash and one
-> spare CPU you can have authentic OPL3 audio on a $3 board.
+> convincingly with any other technique. With ~80 KB of flash for the
+> code plus whatever your songs need, and one spare CPU, you can have
+> authentic OPL3 audio on a $3 board.
 
 The included demo plays the title-screen music from the 1993 DOS game
 **Prehistorik 2**, captured live from the original `PRE2.EXE` running
-in DOSBox and converted to a `static const opl_event[]` array.
+in DOSBox and converted to a packed `opl_song` C header.
 
 ---
 
@@ -34,8 +35,10 @@ opl/
 |   +-- seq_player.h              Adds synth_update() between tick and ISR
 |
 +-- songs/                      <-- + at least one of these
-|   +-- pre2_loop_song.h          Prehistorik 2 title music (~102 KB flash)
-|   +-- test_melody.c             Beethoven "Ode to Joy" (small example)
+|   +-- pre2_loop_song.h          Prehistorik 2 title music  (~41 KB flash)
+|   +-- doom_setup_song.h         DOOM setup utility music   (~34 KB flash)
+|   +-- ww_intro_song.h           Wacky Wheels intro         (~2.5 KB flash)
+|   +-- ww_theme_song.h           Wacky Wheels theme         (~10 KB flash)
 |
 +-- demo_win/                   <-- Windows-only wrapper, NOT for the MCU
 |   +-- main.c                    Fake-ISR loop calling seq_tick + render
@@ -47,8 +50,7 @@ opl/
 |   +-- dro_loop3.c / .exe        Loop-point detector for DRO captures
 |
 +-- capture/                      DRO captures from DOSBox
-+-- preh2/                        Prehistorik 2 game files (your copy)
-+-- prehistorik2.conf             DOSBox config to recapture music
++-- games/                        DOSBox configs + your copies of the games
 +-- Makefile / build.bat          Windows build
 +-- README.md                     This file
 ```
@@ -79,6 +81,12 @@ flavours:
 
 Select which core the demo links against with `make CORE=nuked` (the
 default) or `make CORE=nuked_optimized`.
+
+> **Note:** `nuked_optimized/` targets the MCU and pulls in `cmsis_gcc.h`
+> and a `fifo.[ch]` implementation that live outside this repo, so it
+> does **not** build standalone on PC. Use the default `nuked/` core
+> for the Windows demo; bring `nuked_optimized/` into your firmware
+> project alongside its CMSIS / FIFO dependencies.
 
 Three things matter for the MCU build: **`nuked_optimized/`** (or
 `nuked/` if you want the unmodified reference), **one song header from
@@ -120,7 +128,7 @@ Requires MinGW gcc (anything â‰¥ 8 works).
 make                 (or:  build.bat)
 opl_demo.exe         loop the Prehistorik 2 title music
 opl_demo.exe --once  play it once and exit
-opl_demo.exe --melody  play the Ode to Joy demo
+opl_demo.exe doom    play the DOOM setup music
 ```
 
 ---
@@ -153,14 +161,16 @@ sensible DAC frequency.
 
 ```c
 typedef struct {
-    uint16_t reg;        // OPL register (bit 8 = OPL3 second port)
-    uint8_t  val;        // value to write
-    uint16_t delay_ms;   // delay AFTER this write
-} opl_event;
+    const uint8_t *data;        // codemap + (code,val) opcode stream
+    uint32_t       data_len;
+    uint16_t       codemap_len;
+    uint8_t        short_code;  // (val+1)     ms delay opcode
+    uint8_t        long_code;   // (val+1)*256 ms delay opcode
+    uint32_t       total_ms;
+} opl_song;
 
 void synth_init(uint32_t sample_rate_hz);              // once at boot
-void seq_play(const opl_event *events, uint32_t n,
-              int loop);                               // start a song
+void seq_play_song(const opl_song *song, int loop);    // start a song
 void seq_stop(void);
 void seq_silence(void);                                // emergency mute
 int  seq_is_playing(void);
@@ -168,6 +178,9 @@ int  seq_is_playing(void);
 void seq_tick(uint32_t ms_elapsed);                    // call every ~1 ms
 void synth_render_sample(int16_t *l, int16_t *r);      // call at sample_rate_hz
 ```
+
+The `opl_song` payload is byte-for-byte the same as a DOSBox DRO v2
+file's data section, so songs are ~2 bytes per OPL register write.
 
 That's it. Two real-time entry points:
 
@@ -178,16 +191,16 @@ That's it. Two real-time entry points:
 
 ### Songs
 
-A song is a `static const opl_event[]`. You make new songs by capturing
-DRO files in DOSBox (`Ctrl+Alt+F7` to start/stop) and converting them
-with `tools/dro2hdr.exe`:
+A song is a `static const opl_song` (with its packed byte payload). You
+make new songs by capturing DRO files in DOSBox (`Ctrl+Alt+F7` to
+start/stop) and converting them with `tools/dro2hdr.exe`:
 
 ```
 tools\dro2hdr.exe capture\my.dro songs\my_song.h my_song
 ```
 
-This produces a header with `my_song[]`, `my_song_count` and
-`my_song_total_ms`.
+This produces a header defining `my_song` (and its backing
+`my_song_data[]` byte array).
 
 [`songs/pre2_loop_song.h`](songs/pre2_loop_song.h) was generated this
 way from a recording of Prehistorik 2's title screen. Loop-point
@@ -202,74 +215,118 @@ for the heuristic.
 
 ### Files to copy / link
 
-| File                                       | Why       |
-| ------------------------------------------ | --------- |
-| `nuked/opl3.c`, `nuked/opl3.h`             | Synth     |
-| `nuked/seq_player.c`, `nuked/seq_player.h` | Sequencer |
-| `songs/<your_song>.h`                      | The music |
+| File                                                           | Why       |
+| -------------------------------------------------------------- | --------- |
+| `nuked_optimized/opl3.c`, `nuked_optimized/opl3.h`             | Synth     |
+| `nuked_optimized/seq_player.c`, `nuked_optimized/seq_player.h` | Sequencer |
+| `songs/<your_song>.h`                                          | The music |
+
+Plus `cmsis_gcc.h` (from your CMSIS pack) and a small byte FIFO that
+exposes the `fifo_init` / `fifo_put_buf` / `fifo_get_buf` /
+`FIFO_FREECOUNT` interface used by `nuked_optimized/seq_player.c`.
+Drop in your project's existing FIFO or vendor any single-producer /
+single-consumer ring of your choice.
+
+(If you'd rather start from the unmodified reference port, swap
+`nuked_optimized/` for `nuked/` everywhere above; you then don't need
+CMSIS or a FIFO, but you give up the MCU optimizations described
+below.)
 
 That's everything. No malloc, no stdio, no `FILE *`, no float math, no
 threads. Pure C99.
 
-### Footprint
+### Footprint (`nuked_optimized/` on Cortex-M4, `-Os`)
 
-- **Flash, code:** ~50 KB (Nuked-OPL3 + seq_player, `-Os` on Cortex-M4).
-- **Flash, song:** Prehistorik 2 loop = ~102 KB. Other songs scale with
-  length and density (the title music is ~17 k events / ~58 s, i.e.
-  ~300 events/s on average â€” fairly dense).
-- **RAM:** `sizeof(opl3_chip)` â‰˜ 14 KB on a 32-bit MCU (the bulk is the
-  1024-entry write buffer; you can shrink it by editing
-  `OPL_WRITEBUF_SIZE` in `opl3.h` if you don't use buffered writes).
-  Plus a few hundred bytes of player state.
-- **CPU:** `OPL3_GenerateResampled` is roughly 350â€“500 cycles per stereo
-  frame on Cortex-M4. At 20 kHz that's about 7â€“10 MHz of effective CPU.
-  Comfortable on STM32F4/F7/H7, RP2040, ESP32, etc.
+- **Flash, code:** ~50 KB (Nuked-OPL3 + seq_player).
+- **Flash, song:** packed `opl_song` is ~2 bytes per OPL register
+  write — e.g. Prehistorik 2 loop = ~41 KB, DOOM setup = ~34 KB,
+  Wacky Wheels intro = ~2.5 KB. Songs scale with length and density.
+- **RAM:** `sizeof(opl3_chip)` ? 14 KB (the bulk is the 1024-entry
+  write buffer; you can shrink it by editing `OPL_WRITEBUF_SIZE` in
+  `opl3.h` if you don't use buffered writes). Plus a few KB for the
+  sample FIFO (`SYNTH_FIFO_FRAMES` in `seq_player.c`, default ~4 KB)
+  and a few hundred bytes of player state.
+- **CPU:** `OPL3_Generate` is roughly 350–500 cycles per stereo frame
+  on Cortex-M4. At the native 49 716 Hz that's about 17–25 MHz of
+  effective CPU — comfortable on STM32F4/F7/H7, RP2040, ESP32, etc.
+  (The reference `nuked/` port is somewhat heavier and goes through
+  `OPL3_GenerateResampled` instead; see _Sample-rate choices_ below.)
 
-### Skeleton
+### Skeleton (`nuked_optimized/` on MCU)
 
 ```c
 #include "seq_player.h"
 #include "pre2_loop_song.h"
 
-#define SAMPLE_RATE_HZ 20000
+#define SAMPLE_RATE_HZ 49716   /* OPL3 native rate -- run as close to this as your DAC allows */
 
 void boot(void)
 {
     synth_init(SAMPLE_RATE_HZ);
-    seq_play(pre2_loop_song, pre2_loop_song_count, /*loop=*/1);
+    seq_play_song(&pre2_loop_song, /*loop=*/1);
 
-    timer_setup_periodic(1000 /* Âµs */, on_systick_1ms);
+    timer_setup_periodic(1000 /* µs */, on_systick_1ms);
     dac_setup(SAMPLE_RATE_HZ, on_dac_sample);
     enable_irq();
 }
 
-void on_systick_1ms(void)             // 1 kHz timer ISR
+void on_systick_1ms(void)             // 1 kHz low-priority timer ISR
 {
     seq_tick(1);
+    synth_update();                   // refill the sample FIFO
 }
 
-void on_dac_sample(void)              // 20 kHz DAC ISR
+void on_dac_sample(void)              // ~50 kHz high-priority DAC ISR
 {
     int16_t l, r;
-    synth_render_sample(&l, &r);
+    synth_render_sample(&l, &r);      // O(1): pop one frame from the FIFO
     dac_write(l, r);                  // or  dac_mono((l + r) >> 1);
 }
 ```
 
-The two ISRs share only the `opl3_chip` struct. As long as both run on
-the same core, no locking is needed (the chip is a passive data
-structure and the writes/reads don't race in any meaningful way). On a
+The sample FIFO between `synth_update()` and `synth_render_sample()`
+is what makes this safe: the DAC ISR is guaranteed to find a frame
+ready every time, no matter how long the previous `seq_tick()` took.
+The two ISRs share only the `opl3_chip` struct and the FIFO; on a
+single-core MCU no locking is needed (the producer briefly masks IRQs
+around the FIFO write — see `nuked_optimized/seq_player.c`). On a
 multi-core MCU put both on the same core.
 
-### Sample-rate choices
+### Sample-rate choices and the FIFO
 
-- **20 000 Hz** â€” typical clean divider from common MCU peripheral
-  clocks; perfectly fine for OPL3 audio. Use this unless you have a
-  reason not to.
-- **22 050 Hz / 44 100 Hz** â€” radio-friendly, easy IÂ²S codec rates.
-- **49 716 Hz** â€” native chip rate. If you can clock your DAC there
-  exactly, you can use `OPL3_Generate` directly and skip the resampler
-  for ~30 % less CPU.
+The MCU build is deliberately structured so the audio ISR is **as
+cheap as physically possible**: it pops one stereo frame from a small
+ring and returns. All synth work — the expensive part — happens in a
+lower-priority context that calls `synth_update()` to refill the ring
+whenever it has spare time.
+
+```
+  low priority                                high priority
+  --------------------------------            -------------------------
+  seq_tick(1)        ? OPL register writes
+  synth_update()     ? OPL3_Generate ? push   pop ? synth_render_sample()
+                          frames into FIFO            ?
+                                                    DAC / I?S / PWM
+```
+
+This is why `nuked_optimized/` deliberately calls `OPL3_Generate`
+(native rate) rather than `OPL3_GenerateResampled` (any rate). The
+resampler is convenient on PC but it adds per-sample interpolation
+cost for no audible benefit on the MCU. Instead, **clock your audio
+ISR as close to the chip's native 49 716 Hz as you reasonably can**
+and let the FIFO absorb whatever jitter the lower-priority producer
+introduces. That gives you bit-accurate playback for free.
+
+If your DAC clock can't hit 49 716 Hz exactly:
+
+- **48 000 Hz** is essentially indistinguishable and the easiest
+  divider on most modern audio peripherals.
+- **44 100 Hz** is fine — a fraction of a percent off pitch, no other
+  audible effect.
+- **24 858 Hz** (= 49 716 / 2) is the FALCON build's choice; halves the
+  per-frame CPU at a tiny aliasing cost on the highest OPL voices.
+- **Anything below ~22 kHz** — use `OPL3_GenerateResampled` from the
+  reference `nuked/` port instead and accept the resampler cost.
 
 ### What the demo wrapper teaches you
 
@@ -286,19 +343,113 @@ self-paces the synth and the timer IRQ self-paces the sequencer.
 
 ---
 
-## Re-capturing the Prehistorik 2 music (optional)
+## Capturing OPL music from a DOS game
 
-A copy of the game lives in `preh2/`. To capture / re-capture:
+DOSBox can sniff every write your game makes to the OPL2/OPL3 chip and
+log them to a **DRO v2** file. That file is the raw, byte-perfect
+register stream — same one the chip would have seen on real hardware —
+and is the input to all of the converter / loop-finder tools below.
 
-1. Install DOSBox (already done by `winget install DOSBox.DOSBox`).
-2. `& "C:\Program Files (x86)\DOSBox-0.74-3\DOSBox.exe" -conf prehistorik2.conf`
-3. When the title music starts, press **Ctrl+Alt+F7** to begin Adlib
-   capture; press it again to stop. The `.dro` lands in `capture\`.
-4. Detect the loop point and trim:
-   `tools\dro_loop3.exe capture\pre2_000.dro capture\pre2_loop.dro`
-5. Convert to a header:
-   `tools\dro2hdr.exe capture\pre2_loop.dro songs\pre2_loop_song.h pre2_loop_song`
-6. `make`
+### One-time setup
+
+1. Install DOSBox 0.74 (e.g. `winget install DOSBox.DOSBox`).
+2. Drop the game into a folder under `games/` (folder is gitignored —
+   you supply your own copy of the game).
+3. Write a small DOSBox config that points at it. See
+   [`games/doom.conf`](games/doom.conf) for a complete example. The
+   parts that matter are:
+
+   ```ini
+   [sblaster]
+   oplmode=opl3
+   oplemu=nuked     ; (only affects DOSBox's own playback; .dro records the raw register writes regardless)
+   oplrate=49716
+
+   [dosbox]
+   captures=capture ; .dro files land here
+
+   [autoexec]
+   mount c c:\silixcon-devel\opl\games\doom
+   c:
+   ```
+
+### Recording
+
+```
+& "C:\Program Files (x86)\DOSBox-0.74-3\DOSBox.exe" -conf games\doom.conf
+```
+
+Inside DOSBox, start the game, get to the music you want, then:
+
+| Key           | Action                                   |
+| ------------- | ---------------------------------------- |
+| `Ctrl+Alt+F7` | Start / stop OPL capture (writes `.dro`) |
+| `Ctrl+F10`    | Release / grab the mouse                 |
+| Type `EXIT`   | Quit DOSBox                              |
+
+Each capture appears in `capture/` as `<gamename>_NNN.dro`.
+
+> **Tip:** silence the SFX channels first (`-nomonsters -nosound` in
+> DOOM, mute SFX in the in-game options elsewhere) so only the music
+> ends up in the recording.
+
+---
+
+## The `tools/` folder — DRO triage and conversion
+
+Once you have a `.dro`, the offline programs in `tools/` turn it into a
+clean, embeddable C header. They share the same DRO v2 reader and can
+be chained pipeline-style.
+
+### The two you'll always use
+
+| Tool                  | What it does                                                                                                                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tools\dro_loop3.exe` | Finds the loop point (start of the second repetition) and writes a trimmed `.dro` containing exactly one loop iteration. Heuristic: scans the OPL register stream for the longest self-similar suffix. |
+| `tools\dro2hdr.exe`   | Converts a `.dro` into a packed `opl_song` C header that drops straight into [`songs/`](songs/). The payload is byte-identical to the DRO data section, so a 35 KB DRO becomes a 35 KB header.         |
+
+Typical pipeline for a looping song (Prehistorik 2 title music):
+
+```
+tools\dro_loop3.exe  capture\pre2_000.dro  capture\pre2_loop.dro
+tools\dro2hdr.exe    capture\pre2_loop.dro songs\pre2_loop_song.h pre2_loop_song
+make
+```
+
+For a one-shot song (DOOM setup music) the loop step is unnecessary —
+just slice off the intro/outro silence with `dro_slice` (below) and
+feed the result to `dro2hdr`.
+
+### Triage / inspection helpers
+
+These don't modify the file; they help you decide _where_ to trim.
+
+| Tool                                                | Purpose                                                                                                                    |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `tools\dro_analyze.exe file.dro`                    | One-page summary: length, register-write density, channels touched, percussion usage. Run this first on any new capture.   |
+| `tools\dro_dump.exe file.dro [start_ev] [count]`    | Pretty-print the decoded register-write stream with timestamps. Used to eyeball where a section starts.                    |
+| `tools\dro_segments.exe file.dro`                   | Splits the timeline at long silent gaps; useful for separating stinger / loop / outro within a single capture.             |
+| `tools\dro_perc.exe file.dro`                       | Lists every percussion strike with its timestamp — handy for finding bar boundaries in songs whose drums lock to the beat. |
+| `tools\dro_trigs.exe file.dro`                      | Reports register writes that look like loop / cue triggers (e.g. abrupt instrument changes).                               |
+| `tools\dro_loopfind.exe file.dro loop_start_ms [N]` | Given a candidate loop start, scores how well the tail repeats it. Use to validate / nudge what `dro_loop3` produced.      |
+
+### Surgery helpers
+
+These rewrite the file.
+
+| Tool                                                   | Purpose                                                                                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `tools\dro_slice.exe in.dro out.dro start_ms end_ms`   | Cuts out a `[start_ms, end_ms)` window. Use to crop intros/outros once `dro_analyze` or `dro_dump` told you where to cut.       |
+| `tools\dro_evrange.exe in.dro out.dro start_ev end_ev` | Same idea but in event-index space.                                                                                             |
+| `tools\dro_loop.exe`, `dro_loop2.exe`, `dro_loop3.exe` | Three generations of the loop-finder; `dro_loop3` is the current default. The older ones are kept for diffing on tricky inputs. |
+
+### Building the tools
+
+The tools are plain C99 with no dependencies; rebuild any of them with:
+
+```
+gcc -O2 -Wall -Wextra -std=c99 tools\<name>.c -o tools\<name>.exe
+```
 
 ---
 
@@ -308,9 +459,11 @@ A copy of the game lives in `preh2/`. To capture / re-capture:
   Unmodified upstream. See the header in `nuked/opl3.h` for credits to
   the MAME team, OPLx decap project, and others whose work made the
   emulation possible.
-- **Prehistorik 2** music â€” Â© 1993 Titus Interactive. The `preh2/`
-  game folder and any captured `.dro` / generated `.h` files derived
-  from it are present here for personal/historical/educational use; do
-  not redistribute.
-- **Beethoven, "Ode to Joy"** (1824) â€” public domain.
+- **Game music captures** — the `.dro` / generated `.h` files in this
+  repo are derived from games whose music remains © their respective
+  rightsholders (Titus Interactive for _Prehistorik 2_, id Software for
+  _DOOM_, Apogee for _Wacky Wheels_). They are included for personal /
+  historical / educational use; do not redistribute. The original game
+  binaries themselves are not in the repo — supply your own copy under
+  `games/`.
 - Everything else (sequencer, demo, tools) â€” do whatever you like.

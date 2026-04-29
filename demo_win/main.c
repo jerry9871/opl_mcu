@@ -5,16 +5,15 @@
     and this same main loop runs unchanged on a microcontroller.
 
     Built-in songs (compiled in from songs):
-      melody     -- "Ode to Joy" (Beethoven, public domain)  [DEFAULT]
-      pre2       -- Prehistorik 2 title music  (~102 KB flash, looping)
-      ww_intro   -- Wacky Wheels intro         (~6  KB flash)
-      ww_theme   -- Wacky Wheels theme         (~26 KB flash)
-      doom       -- DOOM setup utility music   (~86 KB flash, looping)
+      pre2       -- Prehistorik 2 title music  (~41 KB flash, looping)  [DEFAULT]
+      ww_intro   -- Wacky Wheels intro         (~2.5 KB flash)
+      ww_theme   -- Wacky Wheels theme         (~10 KB flash)
+      doom       -- DOOM setup utility music   (~34 KB flash, looping)
 
     Build (MinGW gcc): see Makefile / build.bat.
 
     Usage:
-       opl_demo.exe                    -- plays the Ode to Joy demo (default)
+       opl_demo.exe                    -- plays the default built-in song
        opl_demo.exe <name>             -- plays a named built-in song
        opl_demo.exe <file.dro>         -- plays any DOSBox DRO v2 capture
        opl_demo.exe ... --loop         -- loop forever  (Ctrl+C to stop)
@@ -33,43 +32,21 @@
 #include "ww_theme_song.h"
 #include "doom_setup_song.h"
 
-/* alternate built-in song (test_melody.c) */
-extern const opl_event opl_demo_melody[];
-extern const uint32_t  opl_demo_melody_count;
-
 #define SAMPLE_RATE   22050   /* a microcontroller would use 20000 here  */
 #define TICK_MS       1       /* sequencer tick granularity              */
 
 typedef struct {
 	const char*       name;
 	const char*       desc;
-	const opl_event*  events;       /* set for legacy MODE_EVENTS songs */
-	uint32_t          count;
-	const opl_song*   song;         /* set for packed MODE_PACKED songs */
+	const opl_song*   song;
 	int               default_loop;
 } song_t;
 
 static const song_t SONGS[] = {
-	{
-		"melody",   "\"Ode to Joy\" (Beethoven, PD)",
-		/*events*/ NULL, /*count*/ 0, /*song*/ NULL, /*loop*/ 0
-	},   /* patched at runtime */
-	{
-		"pre2",     "Prehistorik 2 title",
-		NULL, 0, &pre2_loop_song,    1
-	},
-	{
-		"ww_intro", "Wacky Wheels intro",
-		NULL, 0, &ww_intro_song,     0
-	},
-	{
-		"ww_theme", "Wacky Wheels theme",
-		NULL, 0, &ww_theme_song,     1
-	},
-	{
-		"doom",     "DOOM setup music",
-		NULL, 0, &opl_doom_setup_song, 1
-	},
+	{ "pre2",     "Prehistorik 2 title",  &pre2_loop_song,    1 },
+	{ "ww_intro", "Wacky Wheels intro",   &ww_intro_song,     0 },
+	{ "ww_theme", "Wacky Wheels theme",   &ww_theme_song,     1 },
+	{ "doom",     "DOOM setup music",     &opl_doom_setup_song, 1 },
 };
 #define N_SONGS ((int)(sizeof(SONGS)/sizeof(SONGS[0])))
 
@@ -85,12 +62,6 @@ list_songs(void)
 int
 main(int argc, char** argv)
 {
-	/* Patch in the dynamic fields that aren't compile-time constants. */
-	song_t songs[N_SONGS];
-	memcpy(songs, SONGS, sizeof(songs));
-	songs[0].events = opl_demo_melody;
-	songs[0].count  = opl_demo_melody_count;
-
 	int loop_explicit = -1;          /* -1 = use song's default */
 	const char* arg   = NULL;        /* song name OR .dro path  */
 
@@ -130,12 +101,12 @@ main(int argc, char** argv)
 	const char*   dro    = NULL;
 
 	if (arg == NULL) {
-		picked = &songs[0];          /* default: melody */
+		picked = &SONGS[0];          /* default: pre2 */
 
 	} else {
 		for (int i = 0; i < N_SONGS; i++)
-			if (!strcmp(arg, songs[i].name)) {
-				picked = &songs[i];
+			if (!strcmp(arg, SONGS[i].name)) {
+				picked = &SONGS[i];
 				break;
 			}
 
@@ -158,9 +129,8 @@ main(int argc, char** argv)
 
 	synth_init(SAMPLE_RATE);
 
-	opl_event* dro_events = NULL;    /* owned only when a .dro is used */
-	opl_song   dro_song   = {0};
-	int        dro_song_loaded = 0;
+	opl_song dro_song = {0};
+	int      dro_song_loaded = 0;
 
 	if (dro) {
 		if (dro_load(dro, &dro_song) != 0) {
@@ -174,17 +144,11 @@ main(int argc, char** argv)
 		printf("  loop        : %s\n", loop ? "yes (Ctrl+C to stop)" : "no");
 		seq_play_song(&dro_song, loop);
 
-	} else if (picked->song) {
+	} else {
 		printf("  song        : %s (%s, %u bytes packed)\n",
 			   picked->name, picked->desc, picked->song->data_len);
 		printf("  loop        : %s\n", loop ? "yes (Ctrl+C to stop)" : "no");
 		seq_play_song(picked->song, loop);
-
-	} else {
-		printf("  song        : %s (%s, %u events)\n",
-			   picked->name, picked->desc, picked->count);
-		printf("  loop        : %s\n", loop ? "yes (Ctrl+C to stop)" : "no");
-		seq_play(picked->events, picked->count, loop);
 	}
 
 	/*  ---- the canonical real-time loop ---------------------------------
@@ -213,7 +177,6 @@ main(int argc, char** argv)
 	}
 
 	audio_close();
-	free(dro_events);
 
 	if (dro_song_loaded)
 		dro_song_free(&dro_song);
