@@ -23,14 +23,14 @@ in DOSBox and converted to a `static const opl_event[]` array.
 
 ```
 opl/
-+-- core/                       <-- portable reference build (PC + MCU)
++-- nuked/                      <-- portable reference build (PC + MCU)
 |   +-- opl3.c     opl3.h         Nuked-OPL3 v1.8 (LGPL 2.1+, unmodified)
 |   +-- seq_player.c              Sequence player: tick + render API
 |   +-- seq_player.h              Public interface -- read this file first
 |
-+-- core_mcu/                   <-- MCU-optimized variant of the same thing
++-- nuked_optimized/            <-- MCU-optimized variant of the Nuked port
 |   +-- opl3.c     opl3.h         Nuked-OPL3 v1.8 + heavy Cortex-M tweaks
-|   +-- seq_player.c              Same API as core/, plus a sample FIFO
+|   +-- seq_player.c              Same API as nuked/, plus a sample FIFO
 |   +-- seq_player.h              Adds synth_update() between tick and ISR
 |
 +-- songs/                      <-- + at least one of these
@@ -55,32 +55,42 @@ opl/
 
 ## Two cores, one API
 
-- [`core/`](core/) is the **portable reference build** — byte-identical
+The repository keeps each OPL emulation core in its own folder so that
+alternative engines (e.g. DOSBox `dbopl`) can be added side-by-side
+without disturbing the others. Today there are two **Nuked-OPL3**
+flavours:
+
+- [`nuked/`](nuked/) is the **portable reference build** � byte-identical
   Nuked-OPL3 v1.8 plus a tiny sequencer. Use it on PC for
   bit-accurate playback, regression testing, and as the readable
-  baseline against which `core_mcu/` can be diffed.
-- [`core_mcu/`](core_mcu/) is the **MCU-optimized variant of the same
-  thing** — same `seq_player.h` / `opl3.h` API, but the synth has been
-  heavily reworked for low-flash, low-cycle Cortex-M targets (active-
-  slot index list, cached envelope/phase increments, fused L+R mix,
-  CCM/RAM placement, `__SSAT`/`__USAT`/`__builtin_ctz` intrinsics, plus
-  opt-in `OPL_MONO` / `OPL_FORCE_OPL2` / `OPL_MAX_CHANNELS` switches).
-  All non-bit-exact compromises are listed in the banner at the top of
-  [`core_mcu/opl3.c`](core_mcu/opl3.c). The sequencer adds a sample
-  FIFO and a separate `synth_update()` call so the heavy OPL3 work runs
-  in a low-priority context while the audio ISR just pops one frame.
+  baseline against which `nuked_optimized/` can be diffed.
+- [`nuked_optimized/`](nuked_optimized/) is the **MCU-optimized variant
+  of the same Nuked port** � same `seq_player.h` / `opl3.h` API, but
+  the synth has been heavily reworked for low-flash, low-cycle
+  Cortex-M targets (active-slot index list, cached envelope/phase
+  increments, fused L+R mix, CCM/RAM placement,
+  `__SSAT`/`__USAT`/`__builtin_ctz` intrinsics, plus opt-in
+  `OPL_MONO` / `OPL_FORCE_OPL2` / `OPL_MAX_CHANNELS` switches). All
+  non-bit-exact compromises are listed in the banner at the top of
+  [`nuked_optimized/opl3.c`](nuked_optimized/opl3.c). The sequencer
+  adds a sample FIFO and a separate `synth_update()` call so the heavy
+  OPL3 work runs in a low-priority context while the audio ISR just
+  pops one frame.
 
-Three things matter for the MCU build: **`core_mcu/`** (or `core/` if
-you want the unmodified reference), **one song header from `songs/`**,
-and your own audio sink. Everything else is PC tooling.
+Select which core the demo links against with `make CORE=nuked` (the
+default) or `make CORE=nuked_optimized`.
 
-### Going further than `core_mcu/`
+Three things matter for the MCU build: **`nuked_optimized/`** (or
+`nuked/` if you want the unmodified reference), **one song header from
+`songs/`**, and your own audio sink. Everything else is PC tooling.
 
-`core_mcu/` keeps the Nuked-OPL3 envelope/phase/operator pipeline
-intact and just makes it cheaper. If you need _more_ headroom on a
-slower MCU, the next step is to swap the synth engine entirely for one
-that uses simpler maths. Worth knowing about, even if we don't use it
-here:
+### Going further than `nuked_optimized/`
+
+`nuked_optimized/` keeps the Nuked-OPL3 envelope/phase/operator
+pipeline intact and just makes it cheaper. If you need _more_ headroom
+on a slower MCU, the next step is to swap the synth engine entirely
+for one that uses simpler maths. Worth knowing about, even if we don't
+use it here yet:
 
 - **DOSBox `dbopl`** &mdash; the OPL emulator that ships with DOSBox,
   by Peter "Wohlstand" / DOSBox team. Uses table-driven envelope
@@ -88,13 +98,14 @@ here:
   cheaper per sample (often 3&ndash;5&times; faster on M-class cores)
   but **not bit-exact**: envelopes, key-on transients and some
   waveforms are audibly different. Fine for general FM playback,
-  noticeable on percussion and short attack transients.
+  noticeable on percussion and short attack transients. Could live in
+  a sibling folder such as `dbopl/` behind the same `seq_player.h` API.
 - **Other simpler ones**: `ymfm` (Aaron Giles, MAME) trades some
   accuracy for speed too; `adlmidi`'s built-in `OPL3-emu` is also
   worth a look. None match Nuked's "decap-accurate" reputation, but
   all are lighter.
 
-Rule of thumb: stick with `core_mcu/` unless your audio ISR is
+Rule of thumb: stick with `nuked_optimized/` unless your audio ISR is
 overrunning _with_ `OPL_MAX_CHANNELS` capped low and `OPL_FORCE_OPL2`
 enabled. If even that is too much, port `dbopl` behind the same
 `seq_player.h` API and accept the audio compromises.
@@ -118,7 +129,7 @@ opl_demo.exe --melody  play the Ode to Joy demo
 
 ### Synth core
 
-[`core/opl3.c`](core/opl3.c) and [`core/opl3.h`](core/opl3.h) are
+[`nuked/opl3.c`](nuked/opl3.c) and [`nuked/opl3.h`](nuked/opl3.h) are
 **Nuked-OPL3 v1.8** by Nuke.YKT, taken byte-for-byte from
 <https://github.com/nukeykt/Nuked-OPL3> (verified by SHA-256 against
 the upstream `master` branch). It is a cycle-accurate, decap-derived
@@ -138,7 +149,7 @@ sensible DAC frequency.
 
 ### Sequence player
 
-[`core/seq_player.h`](core/seq_player.h) — read this. The whole API is:
+[`nuked/seq_player.h`](nuked/seq_player.h) � read this. The whole API is:
 
 ```c
 typedef struct {
@@ -191,11 +202,11 @@ for the heuristic.
 
 ### Files to copy / link
 
-| File                                     | Why       |
-| ---------------------------------------- | --------- |
-| `core/opl3.c`, `core/opl3.h`             | Synth     |
-| `core/seq_player.c`, `core/seq_player.h` | Sequencer |
-| `songs/<your_song>.h`                    | The music |
+| File                                       | Why       |
+| ------------------------------------------ | --------- |
+| `nuked/opl3.c`, `nuked/opl3.h`             | Synth     |
+| `nuked/seq_player.c`, `nuked/seq_player.h` | Sequencer |
+| `songs/<your_song>.h`                      | The music |
 
 That's everything. No malloc, no stdio, no `FILE *`, no float math, no
 threads. Pure C99.
@@ -293,8 +304,8 @@ A copy of the game lives in `preh2/`. To capture / re-capture:
 
 ## Acknowledgements & licenses
 
-- **Nuked-OPL3** (`core/opl3.[ch]`) — © Nuke.YKT, **LGPL 2.1+**.
-  Unmodified upstream. See the header in `core/opl3.h` for credits to
+- **Nuked-OPL3** (`nuked/opl3.[ch]`) — © Nuke.YKT, **LGPL 2.1+**.
+  Unmodified upstream. See the header in `nuked/opl3.h` for credits to
   the MAME team, OPLx decap project, and others whose work made the
   emulation possible.
 - **Prehistorik 2** music — © 1993 Titus Interactive. The `preh2/`
