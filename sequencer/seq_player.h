@@ -1,6 +1,12 @@
 /*
     seq_player.h — minimal MCU-friendly OPL sequence player.
 
+    Core-agnostic: depends only on the small `OPL3_*` surface declared
+    in <opl3.h> (Reset / WriteReg / WriteRegBuffered / GenerateResampled).
+    Pair this single .c/.h with whichever OPL emulator folder you
+    prefer (nuked/, opal/, ...) by adding -I<core> to the compile
+    command.  See the README for the supported cores.
+
     Architecture (microcontroller layout):
 
      +-------------------------+      every ~1 ms (timer IRQ / SysTick)
@@ -122,8 +128,39 @@ void seq_tick(uint32_t ms_elapsed);
 
 /*  Produce one stereo PCM frame at the rate passed to synth_init().
     Call from your DAC / I2S half-buffer IRQ.
-    For mono output, mix:  out = (l + r) >> 1; */
+    For mono output, mix:  out = (l + r) >> 1;
+
+    Two implementations live behind this signature, selected at compile
+    time:
+      - default (PC build): renders one frame inline via
+        OPL3_GenerateResampled().  Simple; no FIFO; the producer and
+        consumer are the same thread.
+      - -DSEQ_PLAYER_FIFO (MCU build): pops one frame from a sample
+        FIFO that synth_update() refills in a low-priority context.
+        On underrun the previous frame is held to avoid clicks.  See
+        synth_update() below. */
 void synth_render_sample(int16_t* out_l, int16_t* out_r);
+
+#ifdef SEQ_PLAYER_FIFO
+/*  -- MCU-only API ---------------------------------------------------
+    The FIFO build adds a producer/consumer split between the OPL3
+    synth and the audio ISR, plus a percussion-strike hook for a
+    visualizer LED.  Define SEQ_PLAYER_FIFO at compile time to enable
+    it.  Requires fifo.h and cmsis_gcc.h on the include path.       */
+
+/*  Render OPL3 audio into the sample FIFO until it is full (or an
+    internal safety cap is hit).  Call from the same low-priority
+    context as seq_tick(), right after it.  This is where the heavy
+    OPL3 cost lives; it is intentionally separated from the audio ISR
+    so the ISR never blocks on it. */
+void synth_update(void);
+
+/*  Optional percussion-strike hook.  Called from seq_tick() context
+    every time a key-on/off byte is dispatched (registers 0xB0..0xB8).
+    Useful to drive a visualizer LED.  Pass NULL to disable. */
+typedef void (*seq_key_cb)(uint8_t key_byte);
+void seq_set_key_cb(seq_key_cb cb);
+#endif
 
 #ifdef __cplusplus
 }

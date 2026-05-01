@@ -198,7 +198,10 @@ main(int argc, char** argv)
 			   ? loop_explicit
 			   : (picked ? picked->default_loop : 0);
 
-	printf("OPL3 demo (Nuked-OPL3 + tick/render API)\n");
+	#ifndef CORE_NAME
+#define CORE_NAME "unknown"
+	#endif
+	printf("OPL3 demo (core: %s, tick/render API)\n", CORE_NAME);
 	printf("  sample rate : %d Hz\n", SAMPLE_RATE);
 	printf("  tick rate   : %d ms\n", TICK_MS);
 

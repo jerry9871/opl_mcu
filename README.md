@@ -24,15 +24,22 @@ in DOSBox and converted to a packed `opl_song` C header.
 
 ```
 opl/
++-- sequencer/                  <-- shared OPL sequence player (PC + MCU)
+|   +-- seq_player.c              tick + render API; one file, every core
+|   +-- seq_player.h              public interface -- read this file first
+|                                 (define -DSEQ_PLAYER_FIFO on the MCU
+|                                  to get the producer/consumer split)
+|
 +-- nuked/                      <-- portable reference build (PC + MCU)
 |   +-- opl3.c     opl3.h         Nuked-OPL3 v1.8 (LGPL 2.1+, unmodified)
-|   +-- seq_player.c              Sequence player: tick + render API
-|   +-- seq_player.h              Public interface -- read this file first
 |
 +-- nuked_optimized/            <-- MCU-optimized variant of the Nuked port
 |   +-- opl3.c     opl3.h         Nuked-OPL3 v1.8 + heavy Cortex-M tweaks
-|   +-- seq_player.c              Same API as nuked/, plus a sample FIFO
-|   +-- seq_player.h              Adds synth_update() between tick and ISR
+|
++-- opal/                       <-- alternate, much smaller OPL3 (PC + MCU)
+|   +-- opal.c     opal.h         Reality's Opal OPL3, public-domain (~12 KB code)
+|   +-- opl3.h                    header-only `OPL3_*` adapter (no .c shim)
+|   +-- LICENSE.txt
 |
 +-- heatshrink/                 <-- portable streaming decompressor (PC + MCU)
 |   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink, unmodified
@@ -63,72 +70,69 @@ opl/
 |
 +-- capture/                      DRO captures from DOSBox
 +-- games/                        DOSBox configs + your copies of the games
-+-- Makefile / build.bat          Windows build
++-- Makefile / build.bat          Windows build (one binary per core)
 +-- README.md                     This file
 ```
 
-## Two cores, one API
+## Cores: one API, multiple engines
 
-The repository keeps each OPL emulation core in its own folder so that
-alternative engines (e.g. DOSBox `dbopl`) can be added side-by-side
-without disturbing the others. Today there are two **Nuked-OPL3**
-flavours:
+The sequencer in [`sequencer/`](sequencer/) is core-agnostic: it
+depends only on a tiny `OPL3_*` surface (`Reset`, `WriteReg`,
+`WriteRegBuffered`, `Generate`, `GenerateResampled`). Each chip
+emulator lives in its own folder and exposes that surface either
+directly (Nuked) or via a header-only adapter (Opal). Adding a new
+engine is a self-contained "new folder + adapter header" exercise; no
+changes anywhere else.
 
-- [`nuked/`](nuked/) is the **portable reference build** — byte-identical
-  Nuked-OPL3 v1.8 plus a tiny sequencer. Use it on PC for
-  bit-accurate playback, regression testing, and as the readable
-  baseline against which `nuked_optimized/` can be diffed.
-- [`nuked_optimized/`](nuked_optimized/) is the **MCU-optimized variant
-  of the same Nuked port** — same `seq_player.h` / `opl3.h` API, but
-  the synth has been heavily reworked for low-flash, low-cycle
-  Cortex-M targets (active-slot index list, cached envelope/phase
-  increments, fused L+R mix, CCM/RAM placement,
-  `__SSAT`/`__USAT`/`__builtin_ctz` intrinsics, plus opt-in
-  `OPL_MONO` / `OPL_FORCE_OPL2` / `OPL_MAX_CHANNELS` switches). All
-  non-bit-exact compromises are listed in the banner at the top of
-  [`nuked_optimized/opl3.c`](nuked_optimized/opl3.c). The sequencer
-  adds a sample FIFO and a separate `synth_update()` call so the heavy
-  OPL3 work runs in a low-priority context while the audio ISR just
-  pops one frame.
+Three engines are wired up today:
 
-Select which core the demo links against with `make CORE=nuked` (the
-default) or `make CORE=nuked_optimized`.
+- [`nuked/`](nuked/) — **portable reference**. Byte-identical
+  Nuked-OPL3 v1.8. Decap-accurate, ~50 KB code. Use this on PC for
+  bit-accurate playback and as the readable baseline.
+- [`nuked_optimized/`](nuked_optimized/) — **MCU-tuned Nuked port**.
+  Same engine, heavily reworked for low-flash, low-cycle Cortex-M
+  targets (active-slot index list, cached envelope/phase increments,
+  fused L+R mix, CCM/RAM placement, `__SSAT`/`__USAT`/`__builtin_ctz`
+  intrinsics, opt-in `OPL_MONO` / `OPL_FORCE_OPL2` /
+  `OPL_MAX_CHANNELS` switches). All non-bit-exact compromises are
+  listed in the banner at the top of
+  [`nuked_optimized/opl3.c`](nuked_optimized/opl3.c).
+- [`opal/`](opal/) — **alternate engine**, ~12 KB code, ~3-4× cheaper
+  per stereo frame than Nuked. Reality's Opal OPL3, public-domain;
+  pure-C port from libADLMIDI. _Not_ bit-exact: percussion/rhythm
+  mode is unimplemented, envelope shapes differ subtly. Excellent
+  fallback when Nuked is too heavy and the song doesn't lean on the
+  BD/SD/TT/TC/HH percussion mode (most non-id-Software material).
 
-> **Note:** `nuked_optimized/` targets the MCU and pulls in `cmsis_gcc.h`
-> and a `fifo.[ch]` implementation that live outside this repo, so it
-> does **not** build standalone on PC. Use the default `nuked/` core
-> for the Windows demo; bring `nuked_optimized/` into your firmware
-> project alongside its CMSIS / FIFO dependencies.
+The Windows build produces one demo binary per PC-ready core so you
+can A/B them with the same audio path:
 
-Three things matter for the MCU build: **`nuked_optimized/`** (or
-`nuked/` if you want the unmodified reference), **one song header from
-`songs/`**, and your own audio sink. Everything else is PC tooling.
+```
+build.bat
+.\opl_demo_nuked.exe eric --once
+.\opl_demo_opal.exe  eric --once
+```
 
-### Going further than `nuked_optimized/`
+`nuked_optimized/` is **not** built on PC — it pulls in `cmsis_gcc.h`
+and a project-supplied byte FIFO, both of which live outside this
+repo. Bring it into your firmware project alongside those
+dependencies. `nuked/` and `opal/` can both run on the MCU too;
+pick whichever fits your flash and accuracy budget.
 
-`nuked_optimized/` keeps the Nuked-OPL3 envelope/phase/operator
-pipeline intact and just makes it cheaper. If you need _more_ headroom
-on a slower MCU, the next step is to swap the synth engine entirely
-for one that uses simpler maths. Worth knowing about, even if we don't
-use it here yet:
+### Going further if even Opal is too heavy
 
-- **DOSBox `dbopl`** &mdash; the OPL emulator that ships with DOSBox,
-  by Peter "Wohlstand" / DOSBox team. Uses table-driven envelope
-  generation and a much simpler operator loop than Nuked. Drastically
-  cheaper per sample (often 3&ndash;5&times; faster on M-class cores)
-  but **not bit-exact**: envelopes, key-on transients and some
-  waveforms are audibly different. Fine for general FM playback,
-  noticeable on percussion and short attack transients. Could live in
-  a sibling folder such as `dbopl/` behind the same `seq_player.h` API.
-- **Other simpler ones**: `ymfm` (Aaron Giles, MAME) trades some
-  accuracy for speed too; `adlmidi`'s built-in `OPL3-emu` is also
-  worth a look. None match Nuked's "decap-accurate" reputation, but
-  all are lighter.
+- **`ymfm`** (Aaron Giles, MAME) — unified Yamaha FM family in
+  modern C++17, BSD-3. Comparable speed to `dbopl`, broader chip
+  coverage. Would slot in as a sibling `ymfm/` folder.
+- **DOSBox `dbopl`** — the OPL emulator that ships with DOSBox.
+  ~30 KB code, very well-validated. GPLv2, so the combined binary
+  inherits GPLv2.
+- **`adlibemu`** / **`hatari` OPL** — not recommended; surpassed by
+  the engines above.
 
-Rule of thumb: stick with `nuked_optimized/` unless your audio ISR is
-overrunning _with_ `OPL_MAX_CHANNELS` capped low and `OPL_FORCE_OPL2`
-enabled. If even that is too much, port `dbopl` behind the same
-`seq_player.h` API and accept the audio compromises.
+All of these would slot in behind the same sequencer the same way
+Opal does: a folder containing the engine sources plus a header-only
+`opl3.h` mapping their native API onto `OPL3_*`.
 
 ---
 
@@ -146,6 +150,12 @@ opl_demo.exe metallica     loop "Master of Puppets"
 opl_demo.exe path\to\file.dro       play any DOSBox DRO v2 capture
 opl_demo.exe path\to\file.dro_hs13  play a heatshrink-packed DRO at runtime
 ```
+
+The build produces one binary per PC-ready core:
+`opl_demo_nuked.exe`, `opl_demo_opal.exe`, plus `opl_demo.exe`
+(an alias for the nuked binary, kept for convenience).  All three
+take the same command line; the banner prints `core: <name>` so you
+know which engine you're hearing.
 
 The curated short-name list lives at the top of
 [`demo_win/main.c`](demo_win/main.c) (one `#include` + one row in
@@ -178,7 +188,7 @@ sensible DAC frequency.
 
 ### Sequence player
 
-[`nuked/seq_player.h`](nuked/seq_player.h) — read this. The whole API is:
+[`sequencer/seq_player.h`](sequencer/seq_player.h) — read this. The whole API is:
 
 ```c
 typedef struct {
@@ -285,15 +295,20 @@ the OPL register stream — see the comments in
 
 ### Files to copy / link
 
-| File                                                           | Why                                           |
-| -------------------------------------------------------------- | --------------------------------------------- |
-| `nuked_optimized/opl3.c`, `nuked_optimized/opl3.h`             | Synth                                         |
-| `nuked_optimized/seq_player.c`, `nuked_optimized/seq_player.h` | Sequencer                                     |
-| `songs/opl_song_hs.h`                                          | Descriptor type for packed songs              |
-| `songs/<your_song>_song.h`                                     | The music                                     |
-| `heatshrink/heatshrink_decoder.c`, `.h`                        | Streaming decompressor (only if using `--hs`) |
-| `heatshrink/heatshrink_common.h`, `heatshrink_config.h`        | Decoder build-time config                     |
-| `heatshrink/hs_stream.c`, `.h`                                 | Generic byte pump on top of the decoder       |
+| File                                                                | Why                                           |
+| ------------------------------------------------------------------- | --------------------------------------------- |
+| `<core>/opl3.c`, `<core>/opl3.h` (or `opal/opal.c` + `opal/opl3.h`) | Synth                                         |
+| `sequencer/seq_player.c`, `sequencer/seq_player.h`                  | Sequencer (build with `-DSEQ_PLAYER_FIFO`)    |
+| `songs/opl_song_hs.h`                                               | Descriptor type for packed songs              |
+| `songs/<your_song>_song.h`                                          | The music                                     |
+| `heatshrink/heatshrink_decoder.c`, `.h`                             | Streaming decompressor (only if using `--hs`) |
+| `heatshrink/heatshrink_common.h`, `heatshrink_config.h`             | Decoder build-time config                     |
+| `heatshrink/hs_stream.c`, `.h`                                      | Generic byte pump on top of the decoder       |
+
+`<core>` is one of `nuked/`, `nuked_optimized/`, or `opal/`. The
+sequencer is the same file in all three cases; you select the engine
+by putting one core's folder on the include path and linking that
+folder's `.c` files.
 
 For the heatshrink decoder use the **static-allocation** flags so it
 takes no malloc and one BSS-resident instance:
@@ -316,14 +331,16 @@ path has zero new dependencies on top of the original sequencer.
 
 Plus `cmsis_gcc.h` (from your CMSIS pack) and a small byte FIFO that
 exposes the `fifo_init` / `fifo_put_buf` / `fifo_get_buf` /
-`FIFO_FREECOUNT` interface used by `nuked_optimized/seq_player.c`.
+`FIFO_FREECOUNT` interface used by `sequencer/seq_player.c` when
+built with `-DSEQ_PLAYER_FIFO`.
 Drop in your project's existing FIFO or vendor any single-producer /
 single-consumer ring of your choice.
 
 (If you'd rather start from the unmodified reference port, swap
 `nuked_optimized/` for `nuked/` everywhere above; you then don't need
-CMSIS or a FIFO, but you give up the MCU optimizations described
-below.)
+the MCU optimizations described below but everything still builds.
+For a cheaper / smaller engine without rhythm-mode percussion, swap
+in `opal/` instead.)
 
 That's everything. No malloc, no stdio, no `FILE *`, no float math, no
 threads. Pure C99.
@@ -342,7 +359,7 @@ threads. Pure C99.
 - **RAM:** `sizeof(opl3_chip)` ? 14 KB (the bulk is the 1024-entry
   write buffer; you can shrink it by editing `OPL_WRITEBUF_SIZE` in
   `opl3.h` if you don't use buffered writes). Plus a few KB for the
-  sample FIFO (`SYNTH_FIFO_FRAMES` in `seq_player.c`, default ~4 KB)
+  sample FIFO (`SEQ_FIFO_FRAMES` in `sequencer/seq_player.c`, default ~4 KB)
   and a few hundred bytes of player state.
 - **CPU:** `OPL3_Generate` is roughly 350–500 cycles per stereo frame
   on Cortex-M4. At the native 49 716 Hz that's about 17–25 MHz of
@@ -412,7 +429,7 @@ is what makes this safe: the DAC ISR is guaranteed to find a frame
 ready every time, no matter how long the previous `seq_tick()` took.
 The two ISRs share only the `opl3_chip` struct and the FIFO; on a
 single-core MCU no locking is needed (the producer briefly masks IRQs
-around the FIFO write — see `nuked_optimized/seq_player.c`). On a
+around the FIFO write — see `sequencer/seq_player.c`). On a
 multi-core MCU put both on the same core.
 
 ### Sample-rate choices and the FIFO
