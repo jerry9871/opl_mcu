@@ -41,6 +41,11 @@ opl/
 |   +-- opl3.h                    header-only `OPL3_*` adapter (no .c shim)
 |   +-- LICENSE.txt
 |
++-- mame_ymf262/                <-- MAME's OPL3 (Burczynski/Satoh), full rhythm + 4-op
+|   +-- ymf262.c   ymf262.h       Vendored from FBNeo (byte-identical to MAME's ymf262.c)
+|   +-- mame_compat.h             Tiny shim: typedefs + no-op SCAN_VAR/ACB_* save-state
+|   +-- opl3.h                    header-only `OPL3_*` adapter (no .c shim)
+|
 +-- heatshrink/                 <-- portable streaming decompressor (PC + MCU)
 |   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink, unmodified
 |   +-- heatshrink_encoder.[ch]   (PC-only; only dro2hdr / dro_pack pull this in)
@@ -103,14 +108,23 @@ Three engines are wired up today:
   mode is unimplemented, envelope shapes differ subtly. Excellent
   fallback when Nuked is too heavy and the song doesn't lean on the
   BD/SD/TT/TC/HH percussion mode (most non-id-Software material).
+- [`mame_ymf262/`](mame_ymf262/) — **MAME's OPL3** by Jarek
+  Burczynski / Tatsuyuki Satoh, vendored from FBNeo so it's pure C99
+  with no driver-framework dependencies. Full 18-channel YMF262
+  including 4-op mode and rhythm/percussion (BD/SD/TT/TC/HH), so it
+  plays material that Opal silently mutes (e.g. Prehistorik 2). Not
+  bit-exact to a real chip — pre-Nuked envelope/phase model — but
+  decades of MAME use have hardened it. Cheaper per stereo frame
+  than Nuked, ~70 KB code at -O2.
 
 The Windows build produces one demo binary per PC-ready core so you
 can A/B them with the same audio path:
 
 ```
 build.bat
-.\opl_demo_nuked.exe eric --once
-.\opl_demo_opal.exe  eric --once
+.\opl_demo_nuked.exe  eric --once
+.\opl_demo_opal.exe   eric --once
+.\opl_demo_ymf262.exe pre2 --once    (rhythm-mode song; opal is silent on this)
 ```
 
 `nuked_optimized/` is **not** built on PC — it pulls in `cmsis_gcc.h`
@@ -152,8 +166,9 @@ opl_demo.exe path\to\file.dro_hs13  play a heatshrink-packed DRO at runtime
 ```
 
 The build produces one binary per PC-ready core:
-`opl_demo_nuked.exe`, `opl_demo_opal.exe`, plus `opl_demo.exe`
-(an alias for the nuked binary, kept for convenience).  All three
+`opl_demo_nuked.exe`, `opl_demo_opal.exe`, `opl_demo_ymf262.exe`,
+plus `opl_demo.exe`
+(an alias for the nuked binary, kept for convenience). All three
 take the same command line; the banner prints `core: <name>` so you
 know which engine you're hearing.
 
