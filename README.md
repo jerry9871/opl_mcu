@@ -89,54 +89,94 @@ directly (Nuked) or via a header-only adapter (Opal). Adding a new
 engine is a self-contained "new folder + adapter header" exercise; no
 changes anywhere else.
 
-Four engines are wired up today (three built on PC, one MCU-only):
+Four engines are wired up today (three built on PC, one MCU-only).
+All emulate the same Yamaha YMF262 (OPL3); they differ in *how
+faithful* the emulation is and what that costs in cycles and flash.
 
-- [`nuked/`](nuked/) — **portable reference**. Byte-identical
-  Nuked-OPL3 v1.8. Decap-accurate, ~50 KB code. Use this on PC for
-  bit-accurate playback and as the readable baseline.
-- [`nuked_optimized/`](nuked_optimized/) — **MCU-tuned Nuked port**.
-  Same engine, heavily reworked for low-flash, low-cycle Cortex-M
-  targets (active-slot index list, cached envelope/phase increments,
-  fused L+R mix, CCM/RAM placement, `__SSAT`/`__USAT`/`__builtin_ctz`
-  intrinsics, opt-in `OPL_MONO` / `OPL_FORCE_OPL2` /
-  `OPL_MAX_CHANNELS` switches). All non-bit-exact compromises are
-  listed in the banner at the top of
-  [`nuked_optimized/opl3.c`](nuked_optimized/opl3.c).
-- [`opal/`](opal/) — **alternate engine**, ~12 KB code, ~3-4× cheaper
-  per stereo frame than Nuked. Reality's Opal OPL3, public-domain;
-  pure-C port from libADLMIDI. _Not_ bit-exact: percussion/rhythm
-  mode is unimplemented, envelope shapes differ subtly. Excellent
-  fallback when Nuked is too heavy and the song doesn't lean on the
-  BD/SD/TT/TC/HH percussion mode (most non-id-Software material).
-- [`mame/`](mame/) — **MAME's OPL3** by Jarek
-  Burczynski / Tatsuyuki Satoh, vendored from FBNeo so it's pure C99
-  with no driver-framework dependencies. Full 18-channel YMF262
-  including 4-op mode and rhythm/percussion (BD/SD/TT/TC/HH), so it
-  plays material that Opal silently mutes (e.g. Prehistorik 2). Not
-  bit-exact to a real chip — pre-Nuked envelope/phase model — but
-  decades of MAME use have hardened it. Cheaper per stereo frame
-  than Nuked. Larger flash footprint (~90 KB code+tables, mostly the
-  32 KB `sin_tab` and 26 KB `tl_tab`); fine on F4 and up, tight on
-  256 KB parts. Uses `double` only at one-shot table init; the audio
-  path is 100% integer.
+#### How an OPL3 emulator spends its time
 
-The Windows build produces one demo binary per PC-ready core so you
-can A/B them with the same audio path:
+Every per-sample mix loop does, for each of the chip's 36 operators:
+"compute current phase, look up sin(phase), apply the envelope's
+log-domain attenuation, exp-back to linear, sum into the channel
+accumulator". An OPL3 ROM stores log-sin and exp lookup tables for
+1/4 of a sine period each (a few hundred bytes), and the silicon
+reconstructs the rest by quadrant flips and a barrel shift. **The
+core's whole performance story is how it handles those two table
+lookups per operator per sample.**
 
+#### `nuked/` — bit-exact decap reference
+
+[`nuked/opl3.c`](nuked/opl3.c) is **Nuked-OPL3 v1.8** by Nuke.YKT,
+verified byte-for-byte against the upstream
+<https://github.com/nukeykt/Nuked-OPL3> master. It mirrors the real
+silicon: ~1.5 KB of `logsinrom` + `exprom` plus per-operator
+quadrant flips, a function-pointer dispatch over the 8 OPL
+waveforms, a data-dependent shift in the exp stage, and signed XOR
+masking for negative half-cycles. **Output is bit-identical to a
+real YMF262.** Cost: roughly 25–30 cycles per operator on x64,
+~3–4× that on Cortex-M4. Use it as the audible reference and
+to settle "is this song playing right?" disputes.
+
+#### `nuked_optimized/` — same chip, MCU-tuned (MCU-only build)
+
+[`nuked_optimized/opl3.c`](nuked_optimized/opl3.c) keeps Nuked's
+audio model and ROM contents but reworks the *traversal*: an active-
+slot index list (skip operators whose envelope is OFF), cached
+envelope/phase increments, fused L+R mix loop, CCM/RAM placement
+attributes, and Cortex-M4 intrinsics (`__SSAT`/`__USAT` instead of
+branchy clamps, `__builtin_ctz` for the eg trailing-zero scan).
+Adds opt-in compile flags: `OPL_FORCE_OPL2=1` (drops the OPL3
+upper bank, halves the operator count for OPL2 material), `OPL_MAX_CHANNELS<18`
+(silently ignores channels above the limit), `OPL_MONO=1`. With the
+default profile (9-ch / OPL2 / mono) it does roughly half the work
+of plain Nuked on the same song and still sounds bit-identical
+*for OPL2 content*. Not built on PC because it pulls in
+`cmsis_gcc.h`; bring it into your firmware project alongside that
+dependency. The non-bit-exact compromises are listed in the banner
+at the top of the file.
+
+#### `opal/` — small and fast, but rhythm-mode incomplete
+
+[`opal/opal.c`](opal/opal.c) is Reality's **Opal OPL3** (public
+domain, pure-C port from libADLMIDI). It uses small tables (~10 KB
+total) with on-the-fly waveform synthesis — same engineering tradeoff
+as Nuked but a much lighter inner loop. ~12 KB code. **Caveat:**
+the rhythm/percussion mode (register `0xBD` BD/SD/TT/TC/HH strikes)
+is silently dropped, and a few envelope edge cases differ subtly.
+Excellent fallback when you don't need percussion (most non-id-Software
+material is fine). Refuses to play Prehistorik 2's drum-heavy title.
+
+#### `mame/` — MAME's OPL3, full-featured, fastest of the lot
+
+[`mame/ymf262.c`](mame/ymf262.c) is Jarek Burczynski / Tatsuyuki
+Satoh's MAME OPL3, vendored from FBNeo (byte-identical to MAME's
+upstream `ymf262.c`). Pure C99 once a tiny `mame_compat.h` shim
+replaces the framework `#include`s. Full 18 channels including
+4-op mode and rhythm/percussion, so it plays everything Nuked plays
+(though not bit-identically — pre-Nuked envelope/phase model).
+
+The reason it's the **fastest** core in this repo is the table
+strategy: instead of mirroring the silicon's compact ROMs, MAME
+pre-flattens `sin_tab` (32 KB, all 8 OPL waveforms expanded across
+the full period) and `tl_tab` (26 KB, exp + total-level attenuation
+already combined). The entire FM operator collapses to:
+
+```c
+p = (env << 4) + sin_tab[wave + ((phase + pm) >> SH) & MASK];
+return (p >= TL_TAB_LEN) ? 0 : tl_tab[p];
 ```
-build.bat
-.\opl_demo_nuked.exe  eric --once
-.\opl_demo_opal.exe   eric --once
-.\opl_demo_mame.exe   pre2 --once    (rhythm-mode song; opal is silent on this)
-```
 
-`nuked_optimized/` is **not** built on PC — it pulls in `cmsis_gcc.h`
-and a project-supplied byte FIFO, both of which live outside this
-repo. Bring it into your firmware project alongside those
-dependencies. `nuked/` and `opal/` can both run on the MCU too;
-pick whichever fits your flash and accuracy budget.
+— two table lookups, no branches, no function pointers, no
+data-dependent shifts. Roughly 8 cycles per operator on x64 vs
+Nuked's ~25.
 
-### Measured CPU cost
+Tradeoff: ~90 KB total flash (50–60 KB of which is those two
+tables). Fine on F4 and up; tight on 256 KB parts. Audio path is
+100% integer. `double` is used only at one-shot table init (and for
+the timer-period scalar, only relevant if the song uses OPL timer
+reads — DRO captures don't).
+
+#### Measured CPU cost
 
 Each `opl_demo_<core>.exe` accepts `--bench [seconds]`, which runs
 the exact same per-sample render + 1 ms tick loop as live playback
@@ -146,7 +186,7 @@ The number you get is the cost of `synth_render_sample` +
 SysTick ISRs.
 
 Sample run on a modern x64 laptop, 60 s of `metallica` (heavy
-melodic load) at 49 716 Hz stereo, 4 runs averaged:
+melodic load) at 49 716 Hz stereo, 4 runs averaged (variance ? 1%):
 
 | core              | ns per stereo frame | realtime ratio | host CPU% |
 | ----------------- | ------------------: | -------------: | --------: |
@@ -155,33 +195,49 @@ melodic load) at 49 716 Hz stereo, 4 runs averaged:
 | `opal`            |                 196 |         104.0× |     0.96% |
 | `mame`            |                 167 |         122.3× |     0.82% |
 
-Run-to-run variance was ?1%. Don't read "mame beats Nuked" as a
-statement about the chips — it's a statement about which inner loop
-x64 happens to schedule best. On a Cortex-M the gap will narrow
-because MAME's loop has a few wide shifts that x64 does in 1 cycle
-but the M4 emulates in several. Order of magnitude on STM32F407 @
-168 MHz at 49716 Hz is roughly: `mame`/`opal` ? 25-35% of one core,
+Don't read "`mame` beats `nuked`" as a statement about the chips —
+it's a statement about which inner loop x64 happens to schedule
+best. On Cortex-M the gap will narrow somewhat (`mame` uses a few
+64-bit shifts that x64 does in 1 cycle but M4 emulates in several),
+but the ranking is stable. Order of magnitude on STM32F407 @
+168 MHz at 49 716 Hz: `mame`/`opal` ? 25-35% of one core,
 `nuked_optimized` (default 9-ch / OPL2 / mono profile) ? 30-40%,
 plain `nuked` ? 50-70%. All four are real-time on M7 with margin.
 
-### Going further
+#### Picking a core
 
-If you really need to shave more cycles than `mame` or
-`nuked_optimized` can give you, candidates are:
+| If…                                                | Use                                                      |
+| -------------------------------------------------- | -------------------------------------------------------- |
+| You want to verify "did I capture this song right?" | `nuked` — the audio reference                            |
+| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame`, `nuked`, or `nuked_optimized` (not `opal`)       |
+| You're on an MCU with ?512 KB flash                | `mame` — fastest and most complete                       |
+| You're on an MCU with ?256 KB flash                | `opal` (no percussion) or `nuked_optimized` (default profile) |
+| You're targeting strict bit-accuracy on an MCU     | `nuked_optimized` with all defaults disabled, or plain `nuked` if you have the cycles |
+| You need to A/B sound quality                      | Build all three, listen — `--once` makes it easy         |
 
-- **`ymfm`** (Aaron Giles, MAME) — unified Yamaha FM family in
-  modern C++17, BSD-3. Comparable speed to `dbopl`, broader chip
-  coverage. Would slot in as a sibling `ymfm/` folder.
-- **DOSBox `dbopl`** — the OPL emulator that ships with DOSBox.
-  ~30 KB code, very well-validated. GPLv2, so the combined binary
-  inherits GPLv2. In benchmarks it's roughly tied with `mame`, so
-  the porting effort and licence change rarely pay off here.
-- **`adlibemu`** / **`hatari` OPL** — not recommended; surpassed by
-  the engines above.
+#### Why not other engines?
 
-All of these would slot in behind the same sequencer the same way
-`opal` and `mame` do: a folder containing the engine sources plus a
-header-only `opl3.h` mapping their native API onto `OPL3_*`.
+- **`dbopl`** (DOSBox). Uses essentially the same flat-table strategy
+  as `mame`; benchmarks roughly tied. C++-heavy (templates, references)
+  so porting to plain C is real work. **GPLv2 forces the entire
+  combined binary to GPLv2** — a serious commercial liability if
+  your firmware is closed-source. **Skip unless you already ship GPL.**
+- **`ymfm`** (Aaron Giles). Modern C++17 unified Yamaha FM family,
+  BSD-3-Clause. Broader chip coverage than this repo needs (we only
+  want OPL3). Comparable speed to `mame`/`dbopl`. Porting cost: high
+  (templates, std::array, references). Worth it only if you need
+  OPL2/OPN/OPN2 etc. side-by-side.
+- **`adlibemu`** (Ken Silverman) and **`hatari` OPL**. Older, slower,
+  less faithful than any of the above. Not recommended.
+
+If you ever feel cycle-starved on the MCU with `mame`, the
+productive moves (in order of payoff vs effort) are: place the hot
+tables in CCM/DTCM RAM if your part has it (2× on memory-bound
+parts); pre-bake `sin_tab`/`tl_tab` as `static const` to drop the
+libm dependency (~10 KB flash); precompute `fn_tab` for a fixed
+sample rate (4 KB RAM saved); add `__SSAT` to the final clamps; add
+an active-channel skip list. None of those touch `op_calc`. Together
+they should put `mame` solidly under 20% of an STM32F407.
 
 ---
 
