@@ -4,17 +4,19 @@
 #   nuked/             - Nuked-OPL3 reference port (portable, bit-exact)
 #   nuked_optimized/   - MCU-optimized variant of the Nuked port
 #   opal/              - Reality's Opal OPL3 (public domain, ~12 KB code)
+#   mame/              - MAME OPL3 (Burczynski/Satoh, vendored from FBNeo)
+#   mame_optimized/    - MAME OPL3 with MCU optimizations (precomputed tables, etc.)
 #   songs/             - embedded songs (packed opl_song format)
 #   demo_win/          - Windows demo wrapper (main + WinMM audio sink)
 #   tools/             - offline DRO -> .h converter and analysis utilities
 #   capture/           - DRO captures (DOSBox output)
 #
 # Default target builds one binary per core so you can A/B them:
-#   make                 -> opl_demo_nuked.exe + opl_demo_opal.exe
-#                           (and opl_demo.exe == opl_demo_nuked.exe for
-#                            backward compatibility)
-#   make nuked           -> opl_demo_nuked.exe only
-#   make opal            -> opl_demo_opal.exe only
+#   make                       -> opl_demo_nuked.exe + opl_demo_opal.exe
+#                                 + opl_demo_mame.exe
+#   make nuked                 -> opl_demo_nuked.exe only
+#   make opal                  -> opl_demo_opal.exe only
+#   make mame                  -> opl_demo_mame.exe only
 #   make CORE=nuked_optimized  -> single binary against an explicit core
 #
 # Run:      make run
@@ -40,7 +42,7 @@ COMMON_HDR = sequencer/seq_player.h \
 SONG_HEADERS = $(wildcard songs/*_song.h)
 
 # ---- per-core binaries ---------------------------------------------------
-all: opl_demo_nuked.exe opl_demo_opal.exe opl_demo.exe
+all: opl_demo_nuked.exe opl_demo_opal.exe opl_demo_mame.exe
 
 opl_demo_nuked.exe: nuked/opl3.c nuked/opl3.h \
                     $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
@@ -53,16 +55,19 @@ opl_demo_opal.exe: opal/opal.c \
 	$(CC) $(COMMON_CFLAGS) -Iopal -DCORE_NAME=\"opal\" -o $@ \
 	      opal/opal.c $(COMMON_SRC) $(LDLIBS)
 
-# Backward-compat default (same bits as opl_demo_nuked.exe).
-opl_demo.exe: opl_demo_nuked.exe
-	copy /Y opl_demo_nuked.exe opl_demo.exe >nul
+opl_demo_mame.exe: mame/ymf262.c \
+                   mame/ymf262.h mame/opl3.h mame/mame_compat.h \
+                   $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
+	$(CC) $(COMMON_CFLAGS) -Imame -DCORE_NAME=\"mame\" -w -o $@ \
+	      mame/ymf262.c $(COMMON_SRC) $(LDLIBS)
 
 # Convenience aliases.
 nuked: opl_demo_nuked.exe
 opal:  opl_demo_opal.exe
+mame:  opl_demo_mame.exe
 
-run: opl_demo.exe
-	./opl_demo.exe
+run: opl_demo_nuked.exe
+	./opl_demo_nuked.exe
 
 songs: ; powershell -ExecutionPolicy Bypass -File tools/regen_songs.ps1
 

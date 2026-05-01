@@ -5,7 +5,7 @@ REM with the same song corpus and audio path:
 REM
 REM   opl_demo_nuked.exe   nuked\         decap-accurate, ~50 KB code
 REM   opl_demo_opal.exe    opal\          public-domain Opal, ~12 KB code
-REM   opl_demo_ymf262.exe  mame_ymf262\   MAME OPL3 (Burczynski/Satoh), full 18-ch + rhythm + 4-op
+REM   opl_demo_mame.exe    mame\           MAME OPL3 (Burczynski/Satoh), full 18-ch + rhythm + 4-op
 REM
 REM Add more cores by copying one of the gcc invocations below and
 REM swapping the include path, source files, and -DCORE_NAME tag.
@@ -27,16 +27,13 @@ gcc %CFLAGS% -Iopal -DCORE_NAME=\"opal\" ^
     opal\opal.c %COMMON% %LIBS%
 if errorlevel 1 goto :error
 
-echo [3/3] ymf262 -^> opl_demo_ymf262.exe
+echo [3/3] mame   -^> opl_demo_mame.exe
 REM Vendored from FBNeo (byte-identical to MAME's ymf262.c).  -w silences the
 REM upstream's pre-C99 stylistic warnings; the audio path is unmodified.
-gcc %CFLAGS% -Imame_ymf262 -DCORE_NAME=\"ymf262\" -w ^
-    -o opl_demo_ymf262.exe ^
-    mame_ymf262\ymf262.c %COMMON% %LIBS%
+gcc %CFLAGS% -Imame -DCORE_NAME=\"mame\" -w ^
+    -o opl_demo_mame.exe ^
+    mame\ymf262.c %COMMON% %LIBS%
 if errorlevel 1 goto :error
-
-REM Keep an unsuffixed default for backward compatibility.
-copy /Y opl_demo_nuked.exe opl_demo.exe >nul
 
 echo.
 echo Done.  Built:

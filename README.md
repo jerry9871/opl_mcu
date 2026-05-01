@@ -41,7 +41,7 @@ opl/
 |   +-- opl3.h                    header-only `OPL3_*` adapter (no .c shim)
 |   +-- LICENSE.txt
 |
-+-- mame_ymf262/                <-- MAME's OPL3 (Burczynski/Satoh), full rhythm + 4-op
++-- mame/                       <-- MAME's OPL3 (Burczynski/Satoh), full rhythm + 4-op
 |   +-- ymf262.c   ymf262.h       Vendored from FBNeo (byte-identical to MAME's ymf262.c)
 |   +-- mame_compat.h             Tiny shim: typedefs + no-op SCAN_VAR/ACB_* save-state
 |   +-- opl3.h                    header-only `OPL3_*` adapter (no .c shim)
@@ -89,7 +89,7 @@ directly (Nuked) or via a header-only adapter (Opal). Adding a new
 engine is a self-contained "new folder + adapter header" exercise; no
 changes anywhere else.
 
-Three engines are wired up today:
+Four engines are wired up today (three built on PC, one MCU-only):
 
 - [`nuked/`](nuked/) — **portable reference**. Byte-identical
   Nuked-OPL3 v1.8. Decap-accurate, ~50 KB code. Use this on PC for
@@ -108,14 +108,17 @@ Three engines are wired up today:
   mode is unimplemented, envelope shapes differ subtly. Excellent
   fallback when Nuked is too heavy and the song doesn't lean on the
   BD/SD/TT/TC/HH percussion mode (most non-id-Software material).
-- [`mame_ymf262/`](mame_ymf262/) — **MAME's OPL3** by Jarek
+- [`mame/`](mame/) — **MAME's OPL3** by Jarek
   Burczynski / Tatsuyuki Satoh, vendored from FBNeo so it's pure C99
   with no driver-framework dependencies. Full 18-channel YMF262
   including 4-op mode and rhythm/percussion (BD/SD/TT/TC/HH), so it
   plays material that Opal silently mutes (e.g. Prehistorik 2). Not
   bit-exact to a real chip — pre-Nuked envelope/phase model — but
   decades of MAME use have hardened it. Cheaper per stereo frame
-  than Nuked, ~70 KB code at -O2.
+  than Nuked. Larger flash footprint (~90 KB code+tables, mostly the
+  32 KB `sin_tab` and 26 KB `tl_tab`); fine on F4 and up, tight on
+  256 KB parts. Uses `double` only at one-shot table init; the audio
+  path is 100% integer.
 
 The Windows build produces one demo binary per PC-ready core so you
 can A/B them with the same audio path:
@@ -124,7 +127,7 @@ can A/B them with the same audio path:
 build.bat
 .\opl_demo_nuked.exe  eric --once
 .\opl_demo_opal.exe   eric --once
-.\opl_demo_ymf262.exe pre2 --once    (rhythm-mode song; opal is silent on this)
+.\opl_demo_mame.exe   pre2 --once    (rhythm-mode song; opal is silent on this)
 ```
 
 `nuked_optimized/` is **not** built on PC — it pulls in `cmsis_gcc.h`
@@ -133,20 +136,52 @@ repo. Bring it into your firmware project alongside those
 dependencies. `nuked/` and `opal/` can both run on the MCU too;
 pick whichever fits your flash and accuracy budget.
 
-### Going further if even Opal is too heavy
+### Measured CPU cost
+
+Each `opl_demo_<core>.exe` accepts `--bench [seconds]`, which runs
+the exact same per-sample render + 1 ms tick loop as live playback
+but skips audio output and times it with `QueryPerformanceCounter`.
+The number you get is the cost of `synth_render_sample` +
+`seq_tick`, i.e. exactly what would run inside the MCU's DAC and
+SysTick ISRs.
+
+Sample run on a modern x64 laptop, 60 s of `metallica` (heavy
+melodic load) at 49 716 Hz stereo, 4 runs averaged:
+
+| core              | ns per stereo frame | realtime ratio | host CPU% |
+| ----------------- | ------------------: | -------------: | --------: |
+| `nuked`           |                 418 |          48.8× |     2.05% |
+| `nuked_optimized` |                 297 |          68.8× |     1.45% |
+| `opal`            |                 196 |         104.0× |     0.96% |
+| `mame`            |                 167 |         122.3× |     0.82% |
+
+Run-to-run variance was ?1%. Don't read "mame beats Nuked" as a
+statement about the chips — it's a statement about which inner loop
+x64 happens to schedule best. On a Cortex-M the gap will narrow
+because MAME's loop has a few wide shifts that x64 does in 1 cycle
+but the M4 emulates in several. Order of magnitude on STM32F407 @
+168 MHz at 49716 Hz is roughly: `mame`/`opal` ? 25-35% of one core,
+`nuked_optimized` (default 9-ch / OPL2 / mono profile) ? 30-40%,
+plain `nuked` ? 50-70%. All four are real-time on M7 with margin.
+
+### Going further
+
+If you really need to shave more cycles than `mame` or
+`nuked_optimized` can give you, candidates are:
 
 - **`ymfm`** (Aaron Giles, MAME) — unified Yamaha FM family in
   modern C++17, BSD-3. Comparable speed to `dbopl`, broader chip
   coverage. Would slot in as a sibling `ymfm/` folder.
 - **DOSBox `dbopl`** — the OPL emulator that ships with DOSBox.
   ~30 KB code, very well-validated. GPLv2, so the combined binary
-  inherits GPLv2.
+  inherits GPLv2. In benchmarks it's roughly tied with `mame`, so
+  the porting effort and licence change rarely pay off here.
 - **`adlibemu`** / **`hatari` OPL** — not recommended; surpassed by
   the engines above.
 
 All of these would slot in behind the same sequencer the same way
-Opal does: a folder containing the engine sources plus a header-only
-`opl3.h` mapping their native API onto `OPL3_*`.
+`opal` and `mame` do: a folder containing the engine sources plus a
+header-only `opl3.h` mapping their native API onto `OPL3_*`.
 
 ---
 
@@ -155,22 +190,22 @@ Opal does: a folder containing the engine sources plus a header-only
 Requires MinGW gcc (anything â‰¥ 8 works).
 
 ```
-make                       (or:  build.bat)
-opl_demo.exe --list        show all built-in songs
-opl_demo.exe               loop the default song (Prehistorik 2 title)
-opl_demo.exe eric --once   play one of the curated entries once and exit
-opl_demo.exe metallica     loop "Master of Puppets"
+make                              (or:  build.bat)
+opl_demo_nuked.exe --list         show all built-in songs
+opl_demo_nuked.exe                loop the default song (Prehistorik 2 title)
+opl_demo_nuked.exe eric --once    play one of the curated entries once and exit
+opl_demo_nuked.exe metallica      loop "Master of Puppets"
 
-opl_demo.exe path\to\file.dro       play any DOSBox DRO v2 capture
-opl_demo.exe path\to\file.dro_hs13  play a heatshrink-packed DRO at runtime
+opl_demo_nuked.exe path\to\file.dro       play any DOSBox DRO v2 capture
+opl_demo_nuked.exe path\to\file.dro_hs13  play a heatshrink-packed DRO at runtime
+opl_demo_mame.exe  metallica --bench 30   render 30 s of song with no audio,
+                                          print render time / CPU% (no real-time pacing)
 ```
 
 The build produces one binary per PC-ready core:
-`opl_demo_nuked.exe`, `opl_demo_opal.exe`, `opl_demo_ymf262.exe`,
-plus `opl_demo.exe`
-(an alias for the nuked binary, kept for convenience). All three
-take the same command line; the banner prints `core: <name>` so you
-know which engine you're hearing.
+`opl_demo_nuked.exe`, `opl_demo_opal.exe`, and
+`opl_demo_mame.exe`. All three take the same command line; the
+banner prints `core: <name>` so you know which engine you're hearing.
 
 The curated short-name list lives at the top of
 [`demo_win/main.c`](demo_win/main.c) (one `#include` + one row in

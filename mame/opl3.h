@@ -20,8 +20,8 @@
     the `chip` pointer so the API matches the chip-by-value style
     used elsewhere.
 */
-#ifndef OPL_OPL3_MAME_YMF262_ADAPTER_H
-#define OPL_OPL3_MAME_YMF262_ADAPTER_H
+#ifndef OPL_OPL3_MAME_ADAPTER_H
+#define OPL_OPL3_MAME_ADAPTER_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,6 +54,7 @@ OPL3_Reset(opl3_chip* chip, uint32_t samplerate)
 		ymf262_shutdown(chip->impl);
 		chip->impl = 0;
 	}
+
 	chip->impl = ymf262_init((int)YMF262_MASTER_CLOCK_HZ,
 							 (int)samplerate, 0, 0);
 	ymf262_reset_chip(chip->impl);

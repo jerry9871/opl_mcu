@@ -13,16 +13,21 @@
     Build (MinGW gcc): see Makefile / build.bat.
 
     Usage:
-       opl_demo.exe                    -- plays the default built-in song
-       opl_demo.exe <name>             -- plays a named built-in song
-       opl_demo.exe <file.dro>         -- plays any DOSBox DRO v2 capture
-       opl_demo.exe ... --loop         -- loop forever  (Ctrl+C to stop)
-       opl_demo.exe ... --once         -- play once and exit
-       opl_demo.exe --list             -- list built-in song names
+       opl_demo_<core>.exe                    -- plays the default built-in song
+       opl_demo_<core>.exe <name>             -- plays a named built-in song
+       opl_demo_<core>.exe <file.dro>         -- plays any DOSBox DRO v2 capture
+       opl_demo_<core>.exe ... --loop         -- loop forever  (Ctrl+C to stop)
+       opl_demo_<core>.exe ... --once         -- play once and exit
+       opl_demo_<core>.exe ... --bench [N]    -- render N s of song with no audio,
+                                                 print render time / CPU%% (no real-time pacing)
+       opl_demo_<core>.exe --list             -- list built-in song names
 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 #include "seq_player.h"
 #include "audio.h"
@@ -144,6 +149,7 @@ main(int argc, char** argv)
 {
 	int loop_explicit = -1;          /* -1 = use song's default */
 	const char* arg   = NULL;        /* song name OR .dro path  */
+	int  bench_secs   = 0;           /* 0 = real-time playback; >0 = benchmark */
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--once"))
@@ -151,6 +157,20 @@ main(int argc, char** argv)
 
 		else if (!strcmp(argv[i], "--loop"))
 			loop_explicit = 1;
+
+		else if (!strcmp(argv[i], "--bench")) {
+			bench_secs = 30;
+
+			/* optional integer argument: --bench N */
+			if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+				bench_secs = atoi(argv[++i]);
+
+				if (bench_secs <= 0)
+					bench_secs = 30;
+			}
+
+			loop_explicit = 1;   /* benchmark always loops; we time-cap it */
+		}
 
 		else if (!strcmp(argv[i], "--list")) {
 			list_songs();
@@ -205,10 +225,14 @@ main(int argc, char** argv)
 	printf("  sample rate : %d Hz\n", SAMPLE_RATE);
 	printf("  tick rate   : %d ms\n", TICK_MS);
 
-	if (audio_open(SAMPLE_RATE) != 0) {
+	if (!bench_secs && audio_open(SAMPLE_RATE) != 0) {
 		fprintf(stderr, "Could not open audio device.\n");
 		return 1;
 	}
+
+	if (bench_secs)
+		printf("  mode        : BENCHMARK (%d s of song, no audio out)\n",
+			   bench_secs);
 
 	synth_init(SAMPLE_RATE);
 
@@ -281,32 +305,82 @@ main(int argc, char** argv)
 		return 1;
 	}
 
-	/*  ---- the canonical real-time loop ---------------------------------
-
-	    On the MCU this whole block is replaced by:
-
-	     void timer_isr_1ms(void) { seq_tick(1); }
-	     void dac_isr_at_SR(void) { int16_t l, r;
-	                                synth_render_sample(&l, &r);
-	                                dac_write(l, r); }
-
-	    Here we fake both ISRs cooperatively: every iteration of the loop
-	    renders exactly TICK_MS milliseconds of audio (= SR/1000 frames),
-	    then advances the sequencer by one tick.  audio_write() blocks
-	    naturally to keep wall-clock pace.
-	    --------------------------------------------------------------- */
 	enum { FRAMES_PER_TICK = (SAMPLE_RATE * TICK_MS) / 1000 };
 	int16_t pcm[FRAMES_PER_TICK * 2];
 
-	while (seq_is_playing()) {
-		for (int i = 0; i < FRAMES_PER_TICK; i++)
-			synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
+	if (bench_secs) {
+		/*  Benchmark: run the same render+tick loop as real-time
+		    playback, but skip audio_write() and time the wall clock.
+		    Measures *only* the cost of synth_render_sample +
+		    seq_tick (i.e. the chip emulator + register dispatch),
+		    which is exactly what would run inside the MCU's DAC ISR
+		    and SysTick.                                              */
+		const uint64_t total_ticks  = (uint64_t)bench_secs * 1000u / TICK_MS;
+		const uint64_t total_frames = total_ticks * FRAMES_PER_TICK;
 
-		audio_write(pcm, FRAMES_PER_TICK);
-		seq_tick(TICK_MS);
+		LARGE_INTEGER qpf, t0, t1;
+		QueryPerformanceFrequency(&qpf);
+		QueryPerformanceCounter(&t0);
+
+		for (uint64_t k = 0; k < total_ticks && seq_is_playing(); k++) {
+			for (int i = 0; i < FRAMES_PER_TICK; i++)
+				synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
+
+			seq_tick(TICK_MS);
+		}
+
+		QueryPerformanceCounter(&t1);
+
+		double wall_s     = (double)(t1.QuadPart - t0.QuadPart) / (double)qpf.QuadPart;
+		double song_s     = (double)bench_secs;
+		double rt_factor  = song_s / wall_s;          /* >1 = faster than real-time */
+		double ns_per_frm = (wall_s * 1.0e9) / (double)total_frames;
+		double cpu_pct    = 100.0 / rt_factor;        /* % of one PC core needed at SR */
+
+		printf("\n");
+		printf("benchmark results (%s):\n", CORE_NAME);
+		printf("  rendered      : %llu frames (%llu ticks)\n",
+			   (unsigned long long)total_frames,
+			   (unsigned long long)total_ticks);
+		printf("  song time     : %.3f s @ %d Hz\n", song_s, SAMPLE_RATE);
+		printf("  wall time     : %.3f s\n", wall_s);
+		printf("  realtime ratio: %.1fx  (1.0x = exactly keeps up)\n", rt_factor);
+		printf("  per frame     : %.1f ns  (host CPU)\n", ns_per_frm);
+		printf("  CPU load      : %.2f%% of one core at %d Hz\n", cpu_pct, SAMPLE_RATE);
+		printf("\n");
+		printf("  rough Cortex-M scaling (very approximate, ignore caches):\n");
+		double host_ghz = 3.5;   /* assume modern x64 ~3.5 GHz; just a yardstick */
+		double m4_ghz   = 0.168; /* 168 MHz STM32F4 */
+		double m7_ghz   = 0.480; /* 480 MHz STM32H7 */
+		double scale_m4 = host_ghz / m4_ghz;
+		double scale_m7 = host_ghz / m7_ghz;
+		printf("    M4  @168 MHz: %.0f%% of one core (rough x%.0f)\n",
+			   cpu_pct * scale_m4, scale_m4);
+		printf("    M7  @480 MHz: %.0f%% of one core (rough x%.0f)\n",
+			   cpu_pct * scale_m7, scale_m7);
+
+	} else {
+		/*  ---- the canonical real-time loop -------------------------
+
+		    On the MCU this whole block is replaced by:
+
+		     void timer_isr_1ms(void) { seq_tick(1); }
+		     void dac_isr_at_SR(void) { int16_t l, r;
+		                                synth_render_sample(&l, &r);
+		                                dac_write(l, r); }
+
+		    Here we fake both ISRs cooperatively.                     */
+		while (seq_is_playing()) {
+			for (int i = 0; i < FRAMES_PER_TICK; i++)
+				synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
+
+			audio_write(pcm, FRAMES_PER_TICK);
+			seq_tick(TICK_MS);
+		}
 	}
 
-	audio_close();
+	if (!bench_secs)
+		audio_close();
 
 	if (dro_song_loaded)
 		dro_song_free(&dro_song);

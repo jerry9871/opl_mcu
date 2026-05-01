@@ -24,7 +24,7 @@
 
 /*  M_PI is non-standard; provide it for sources that expect it.    */
 #ifndef M_PI
-#define M_PI 3.14159265358979323846
+	#define M_PI 3.14159265358979323846
 #endif
 
 typedef uint8_t   UINT8;
@@ -48,7 +48,7 @@ typedef int32_t   INT32;
     keyword.  We make it a `static inline` so each TU emits its own
     definition (matches the upstream gcc build behaviour).          */
 #ifndef INLINE
-#define INLINE              static inline
+	#define INLINE              static inline
 #endif
 
 /*  The vendored ymf262.c declares its structs with C++-style
