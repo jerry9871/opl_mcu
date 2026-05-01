@@ -103,6 +103,33 @@ void synth_init(uint32_t sample_rate_hz);
 
 /*  Begin playback of a packed song (typically from a generated header).
     `loop != 0` restarts at the end. */
+/*  Streaming variant of opl_song: bytes are pulled on demand from a
+    caller-provided callback rather than read from a flat buffer in
+    addressable memory.  Useful when the song lives behind a
+    decompressor (e.g. heatshrink) or in non-memory-mapped flash.
+
+    The byte stream MUST be exactly what `opl_song.data` would be:
+    `codemap_len` codemap bytes followed by the (code,val) opcode
+    stream.  The player reads the codemap once at play start and
+    caches it (128 bytes) so codemap[] lookups during playback don't
+    require seeking.
+
+    next_byte()  : returns the next byte 0..255, or -1 on EOF/error.
+    rewind()     : restart the stream at byte 0.  Required iff loop=1.
+    user         : opaque context pointer passed to both callbacks.   */
+typedef struct opl_song_stream {
+	int (*next_byte)(void* user);
+	void (*rewind)(void* user);
+	void*  user;
+
+	uint16_t codemap_len;
+	uint8_t  short_code;
+	uint8_t  long_code;
+	uint32_t total_ms;
+} opl_song_stream;
+
+void seq_play_stream(const opl_song_stream* stream, int loop);
+
 void seq_play_song(const opl_song* song, int loop);
 
 /*  Stop advancing the sequencer.  Existing OPL register state is left

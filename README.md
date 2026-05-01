@@ -34,20 +34,32 @@ opl/
 |   +-- seq_player.c              Same API as nuked/, plus a sample FIFO
 |   +-- seq_player.h              Adds synth_update() between tick and ISR
 |
-+-- songs/                      <-- + at least one of these
-|   +-- pre2_loop_song.h          Prehistorik 2 title music  (~41 KB flash)
-|   +-- doom_setup_song.h         DOOM setup utility music   (~34 KB flash)
-|   +-- ww_intro_song.h           Wacky Wheels intro         (~2.5 KB flash)
-|   +-- ww_theme_song.h           Wacky Wheels theme         (~10 KB flash)
++-- heatshrink/                 <-- portable streaming decompressor (PC + MCU)
+|   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink, unmodified
+|   +-- heatshrink_encoder.[ch]   (PC-only; only dro2hdr / dro_pack pull this in)
+|   +-- hs_stream.[ch]            Generic byte-stream pump on top of the decoder
+|   +-- heatshrink_config.h       Compile-time tuning (static vs dynamic alloc)
+|
++-- songs/                      <-- + at least one *_song.h
+|   +-- opl_song_hs.h             Self-describing descriptor (hs_data + metadata)
+|   +-- *_song.h                  41 ready-to-link songs, heatshrink-packed (w13/l4)
+|   +-- *.dro / *.dro_hs13        Source DRO captures + runtime-loadable packed form
+|   +-- *.vgz                     Original VGM source files for the above
 |
 +-- demo_win/                   <-- Windows-only wrapper, NOT for the MCU
-|   +-- main.c                    Fake-ISR loop calling seq_tick + render
+|   +-- main.c                    Fake-ISR loop + curated SONGS[] list
 |   +-- audio.h                   Tiny audio-sink interface
 |   +-- audio_win.c               WinMM (waveOut) implementation
+|   +-- dro_load.[ch]             Load .dro / .dro_hs* files at runtime (PC only)
 |
 +-- tools/                      <-- offline PC utilities
-|   +-- dro2hdr.c / .exe          DRO capture -> embeddable C header
-|   +-- dro_loop3.c / .exe        Loop-point detector for DRO captures
+|   +-- vgz2dro.c     / .exe      VGM/VGZ capture -> DRO v2
+|   +-- dro_opt.c     / .exe      Strip redundant register writes from a .dro
+|   +-- dro_loop3.c   / .exe      Loop-point detector
+|   +-- dro_pack.c    / .exe      DRO -> .dro_hs<W>l<L>  (runtime-loadable packed)
+|   +-- dro2hdr.c     / .exe      DRO -> embeddable C header (with --hs for packed)
+|   +-- hs_bench.c    / .exe      Sweep heatshrink window/lookahead for best ratio
+|   +-- regen_songs.ps1           Re-pack every songs/*.dro into songs/*_song.h
 |
 +-- capture/                      DRO captures from DOSBox
 +-- games/                        DOSBox configs + your copies of the games
@@ -125,11 +137,20 @@ enabled. If even that is too much, port `dbopl` behind the same
 Requires MinGW gcc (anything â‰¥ 8 works).
 
 ```
-make                 (or:  build.bat)
-opl_demo.exe         loop the Prehistorik 2 title music
-opl_demo.exe --once  play it once and exit
-opl_demo.exe doom    play the DOOM setup music
+make                       (or:  build.bat)
+opl_demo.exe --list        show all built-in songs
+opl_demo.exe               loop the default song (Prehistorik 2 title)
+opl_demo.exe eric --once   play one of the curated entries once and exit
+opl_demo.exe metallica     loop "Master of Puppets"
+
+opl_demo.exe path\to\file.dro       play any DOSBox DRO v2 capture
+opl_demo.exe path\to\file.dro_hs13  play a heatshrink-packed DRO at runtime
 ```
+
+The curated short-name list lives at the top of
+[`demo_win/main.c`](demo_win/main.c) (one `#include` + one row in
+`SONGS[]` per song); add a row to expose any of the 41 packed songs
+in `songs/`.
 
 ---
 
@@ -182,6 +203,16 @@ void synth_render_sample(int16_t *l, int16_t *r);      // call at sample_rate_hz
 The `opl_song` payload is byte-for-byte the same as a DOSBox DRO v2
 file's data section, so songs are ~2 bytes per OPL register write.
 
+For flash-constrained targets there is a second descriptor
+`opl_song_hs` (defined in [`songs/opl_song_hs.h`](songs/opl_song_hs.h))
+whose payload is a **heatshrink-compressed** DRO stream — typically
+30–40 % of the plain size. The runtime entry point is
+`seq_play_stream(const opl_song_stream*, int loop)` instead of
+`seq_play_song`, fed by the generic byte pump in
+[`heatshrink/hs_stream.h`](heatshrink/hs_stream.h). Same sequencer,
+same ISRs — only the byte source differs. See _Compressed songs_
+below.
+
 That's it. Two real-time entry points:
 
 - **`seq_tick(1)`** in a 1 ms timer ISR â€” walks the song, fires due
@@ -191,23 +222,62 @@ That's it. Two real-time entry points:
 
 ### Songs
 
-A song is a `static const opl_song` (with its packed byte payload). You
-make new songs by capturing DRO files in DOSBox (`Ctrl+Alt+F7` to
-start/stop) and converting them with `tools/dro2hdr.exe`:
+A song is a `static const opl_song` or `static const opl_song_hs` (in
+a `*_song.h` file under [`songs/`](songs/)). All 41 songs shipped
+with this repo are the heatshrink-packed `opl_song_hs` flavour;
+plain `opl_song` is still supported for cases where you don't want
+the decoder dependency.
+
+The whole pipeline from a fresh game recording to a playable header
+is one shell command per stage:
 
 ```
-tools\dro2hdr.exe capture\my.dro songs\my_song.h my_song
+tools\vgz2dro.exe   songs\My_Song.vgz   songs\my_song.dro   (skip if you have .dro already)
+tools\dro_loop3.exe songs\my_song.dro   songs\my_song.dro   (loop-point trim, optional)
+tools\dro_opt.exe   songs\my_song.dro   songs\my_song.dro   (drop redundant writes, optional)
+tools\dro2hdr.exe   songs\my_song.dro   songs\my_song_song.h  my_song  --hs
 ```
 
-This produces a header defining `my_song` (and its backing
-`my_song_data[]` byte array).
+The `--hs` flag tells `dro2hdr` to heatshrink-pack the DRO payload
+(default window=13, lookahead=4 — "w13/l4" — ~8 KB decoder window,
+best-ratio choice for OPL register streams). Drop `--hs` to emit a
+plain `opl_song` instead.
 
-[`songs/pre2_loop_song.h`](songs/pre2_loop_song.h) was generated this
-way from a recording of Prehistorik 2's title screen. Loop-point
-detection (snipping out exactly one repetition of the song) is done by
-`tools/dro_loop3.exe`, which finds the section markers in the OPL
-register stream â€” see the comments in [`tools/dro_loop3.c`](tools/dro_loop3.c)
-for the heuristic.
+To re-pack **every** `songs/*.dro` in one go (e.g. after editing
+encoder settings):
+
+```
+powershell -File tools\regen_songs.ps1
+```
+
+Then add one `#include` and one `SONGS[]` row in
+[`demo_win/main.c`](demo_win/main.c) to expose the new song under a
+friendly short name.
+
+### Compressed songs (`opl_song_hs` + `hs_stream`)
+
+Two delivery channels share the same player:
+
+| Channel                    | Producer                           | Runtime                                                                         |
+| -------------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
+| **Embedded in flash**      | `dro2hdr --hs` -> `*_song.h`       | `#include` it, point an `hs_stream` at `song->hs_data`, call `seq_play_stream`. |
+| **Loaded at runtime (PC)** | `dro_pack` -> `file.dro_hs<W>l<L>` | [`demo_win/dro_load.c`](demo_win/dro_load.c) `dro_load_hs()` does the slurp.    |
+
+Both go through:
+
+```
+  bytes ?? hs_stream_next ??> heatshrink_decoder ??> seq_play_stream ??> OPL3
+```
+
+[`heatshrink/hs_stream.h`](heatshrink/hs_stream.h) is the only new
+piece — a 3-function pump that knows nothing about OPL or DRO. It is
+portable C99, ~80 lines, and is what you ship on the MCU alongside
+`heatshrink_decoder.c`.
+
+Loop-point detection (snipping out exactly one repetition of a song)
+is done by `tools/dro_loop3.exe`, which finds the section markers in
+the OPL register stream — see the comments in
+[`tools/dro_loop3.c`](tools/dro_loop3.c) for the heuristic.
 
 ---
 
@@ -215,11 +285,34 @@ for the heuristic.
 
 ### Files to copy / link
 
-| File                                                           | Why       |
-| -------------------------------------------------------------- | --------- |
-| `nuked_optimized/opl3.c`, `nuked_optimized/opl3.h`             | Synth     |
-| `nuked_optimized/seq_player.c`, `nuked_optimized/seq_player.h` | Sequencer |
-| `songs/<your_song>.h`                                          | The music |
+| File                                                           | Why                                           |
+| -------------------------------------------------------------- | --------------------------------------------- |
+| `nuked_optimized/opl3.c`, `nuked_optimized/opl3.h`             | Synth                                         |
+| `nuked_optimized/seq_player.c`, `nuked_optimized/seq_player.h` | Sequencer                                     |
+| `songs/opl_song_hs.h`                                          | Descriptor type for packed songs              |
+| `songs/<your_song>_song.h`                                     | The music                                     |
+| `heatshrink/heatshrink_decoder.c`, `.h`                        | Streaming decompressor (only if using `--hs`) |
+| `heatshrink/heatshrink_common.h`, `heatshrink_config.h`        | Decoder build-time config                     |
+| `heatshrink/hs_stream.c`, `.h`                                 | Generic byte pump on top of the decoder       |
+
+For the heatshrink decoder use the **static-allocation** flags so it
+takes no malloc and one BSS-resident instance:
+
+```
+-DHEATSHRINK_DYNAMIC_ALLOC=0
+-DHEATSHRINK_STATIC_WINDOW_BITS=13
+-DHEATSHRINK_STATIC_LOOKAHEAD_BITS=4
+-DHEATSHRINK_STATIC_INPUT_BUFFER_SIZE=64
+```
+
+That costs ~8.2 KB of BSS for the decoder window plus ~1.5 KB of
+flash for the decoder code itself; in exchange every `*_song.h` in
+this repo shrinks to 30–40 % of its plain size.
+
+If you don't want to ship heatshrink at all, regenerate the songs
+you need without `--hs` (`tools/dro2hdr.exe in.dro out.h sym`) and
+call `seq_play_song()` instead of `seq_play_stream()`. The plain
+path has zero new dependencies on top of the original sequencer.
 
 Plus `cmsis_gcc.h` (from your CMSIS pack) and a small byte FIFO that
 exposes the `fifo_init` / `fifo_put_buf` / `fifo_get_buf` /
@@ -237,10 +330,15 @@ threads. Pure C99.
 
 ### Footprint (`nuked_optimized/` on Cortex-M4, `-Os`)
 
-- **Flash, code:** ~50 KB (Nuked-OPL3 + seq_player).
-- **Flash, song:** packed `opl_song` is ~2 bytes per OPL register
-  write — e.g. Prehistorik 2 loop = ~41 KB, DOOM setup = ~34 KB,
-  Wacky Wheels intro = ~2.5 KB. Songs scale with length and density.
+- **Flash, code:** ~50 KB (Nuked-OPL3 + seq_player), plus ~1.5 KB if
+  you link in the heatshrink decoder + `hs_stream`.
+- **Flash, song (plain `opl_song`):** ~2 bytes per OPL register write —
+  e.g. Prehistorik 2 loop ~41 KB, DOOM E1M1 ~34 KB, Wacky Wheels
+  intro ~2.5 KB. Songs scale with length and density.
+- **Flash, song (packed `opl_song_hs`, w13/l4):** typically
+  30–40 % of the plain size. Across the 41 songs that ship in this
+  repo the average ratio is **31 %** (2.7 MB plain ? 842 KB packed).
+  Decoder needs ~8.2 KB BSS for its 8 KB sliding window.
 - **RAM:** `sizeof(opl3_chip)` ? 14 KB (the bulk is the 1024-entry
   write buffer; you can shrink it by editing `OPL_WRITEBUF_SIZE` in
   `opl3.h` if you don't use buffered writes). Plus a few KB for the
@@ -252,18 +350,43 @@ threads. Pure C99.
   (The reference `nuked/` port is somewhat heavier and goes through
   `OPL3_GenerateResampled` instead; see _Sample-rate choices_ below.)
 
-### Skeleton (`nuked_optimized/` on MCU)
+### Skeleton (`nuked_optimized/` on MCU, packed song)
 
 ```c
 #include "seq_player.h"
-#include "pre2_loop_song.h"
+#include "opl_song_hs.h"
+#include "pre2_loop_song.h"           /* defines &pre2_loop (opl_song_hs) */
+#include "heatshrink_decoder.h"
+#include "hs_stream.h"
 
 #define SAMPLE_RATE_HZ 49716   /* OPL3 native rate -- run as close to this as your DAC allows */
+
+/*  One static decoder + one static stream is enough for the whole
+    runtime; both are reused for every song you play.            */
+static heatshrink_decoder g_dec;
+static hs_stream          g_hs;
+static opl_song_stream    g_stream;
+
+static int  hs_byte (void* u)         { (void)u; return hs_stream_next(&g_hs); }
+static void hs_rewind(void* u)        { (void)u; hs_stream_rewind(&g_hs);
+                                        for (int i = 0; i < 26; i++) hs_stream_next(&g_hs); }
+
+static void play(const opl_song_hs* s, int loop)
+{
+    hs_stream_init(&g_hs, s->hs_data, s->hs_len, &g_dec);
+    for (int i = 0; i < 26; i++) hs_stream_next(&g_hs);   /* skip DRO header */
+    g_stream = (opl_song_stream){
+        .next_byte = hs_byte, .rewind = hs_rewind, .user = NULL,
+        .codemap_len = s->codemap_len, .short_code = s->short_code,
+        .long_code   = s->long_code,   .total_ms   = s->total_ms,
+    };
+    seq_play_stream(&g_stream, loop);
+}
 
 void boot(void)
 {
     synth_init(SAMPLE_RATE_HZ);
-    seq_play_song(&pre2_loop_song, /*loop=*/1);
+    play(&pre2_loop, /*loop=*/1);
 
     timer_setup_periodic(1000 /* µs */, on_systick_1ms);
     dac_setup(SAMPLE_RATE_HZ, on_dac_sample);
@@ -401,24 +524,34 @@ Once you have a `.dro`, the offline programs in `tools/` turn it into a
 clean, embeddable C header. They share the same DRO v2 reader and can
 be chained pipeline-style.
 
-### The two you'll always use
+### The ones you'll always use
 
-| Tool                  | What it does                                                                                                                                                                                           |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `tools\dro_loop3.exe` | Finds the loop point (start of the second repetition) and writes a trimmed `.dro` containing exactly one loop iteration. Heuristic: scans the OPL register stream for the longest self-similar suffix. |
-| `tools\dro2hdr.exe`   | Converts a `.dro` into a packed `opl_song` C header that drops straight into [`songs/`](songs/). The payload is byte-identical to the DRO data section, so a 35 KB DRO becomes a 35 KB header.         |
+| Tool                  | What it does                                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tools\vgz2dro.exe`   | Converts a VGM/VGZ capture (e.g. from vgmrips.net) into DOSBox DRO v2 format — handy because most archived OPL music online is `.vgz`, not `.dro`.                                                      |
+| `tools\dro_opt.exe`   | Drops register writes that don't change anything observable (re-writing the same value, writes shadowed by an immediately following one). Typically shaves 5–15 % off a capture before any compression. |
+| `tools\dro_loop3.exe` | Finds the loop point (start of the second repetition) and writes a trimmed `.dro` containing exactly one loop iteration. Heuristic: scans the OPL register stream for the longest self-similar suffix.  |
+| `tools\dro2hdr.exe`   | Converts a `.dro` into an embeddable C header. Pass `--hs` (default w13/l4) to heatshrink-pack the payload and emit an `opl_song_hs`; without it you get the plain `opl_song` form.                     |
+| `tools\dro_pack.exe`  | Same heatshrink encoder as `dro2hdr --hs`, but writes a runtime-loadable `*.dro_hs<W>l<L>` file instead of a `.h`. Use this when you want to ship songs as data files (e.g. on an SD card).             |
+| `tools\hs_bench.exe`  | Sweeps a `.dro` through every reasonable `(window, lookahead)` combination and reports the smallest output. Use it once per song corpus to pick the global default; w13/l4 is rarely beaten.            |
 
-Typical pipeline for a looping song (Prehistorik 2 title music):
+Typical pipeline for a looping song captured as VGZ:
 
 ```
-tools\dro_loop3.exe  capture\pre2_000.dro  capture\pre2_loop.dro
-tools\dro2hdr.exe    capture\pre2_loop.dro songs\pre2_loop_song.h pre2_loop_song
-make
+tools\vgz2dro.exe   songs\My_Song.vgz   songs\my_song.dro
+tools\dro_loop3.exe songs\my_song.dro   songs\my_song.dro
+tools\dro_opt.exe   songs\my_song.dro   songs\my_song.dro
+tools\dro2hdr.exe   songs\my_song.dro   songs\my_song_song.h  my_song  --hs
 ```
 
-For a one-shot song (DOOM setup music) the loop step is unnecessary —
-just slice off the intro/outro silence with `dro_slice` (below) and
-feed the result to `dro2hdr`.
+Then wire it into the demo by adding `#include "my_song_song.h"` and a
+`SONGS[]` row in [`demo_win/main.c`](demo_win/main.c). To re-pack the
+whole `songs/` folder in one shot run
+`powershell -File tools\regen_songs.ps1`.
+
+For a one-shot song the `dro_loop3` step is unnecessary — just slice
+off the intro/outro silence with `dro_slice` (below) and feed the
+result to `dro2hdr --hs`.
 
 ### Triage / inspection helpers
 
@@ -445,20 +578,33 @@ These rewrite the file.
 
 ### Building the tools
 
-The tools are plain C99 with no dependencies; rebuild any of them with:
+Most tools are plain C99 with no dependencies; rebuild any of them with:
 
 ```
 gcc -O2 -Wall -Wextra -std=c99 tools\<name>.c -o tools\<name>.exe
+```
+
+The three that touch heatshrink (`dro2hdr`, `dro_pack`, `hs_bench`)
+need the encoder linked in too:
+
+```
+gcc -O2 -Wall -Wextra -std=c99 -Iheatshrink -DHEATSHRINK_DYNAMIC_ALLOC=1 ^
+    tools\dro2hdr.c heatshrink\heatshrink_encoder.c -o tools\dro2hdr.exe
 ```
 
 ---
 
 ## Acknowledgements & licenses
 
-- **Nuked-OPL3** (`nuked/opl3.[ch]`) â€” Â© Nuke.YKT, **LGPL 2.1+**.
+- **Nuked-OPL3** (`nuked/opl3.[ch]`) — © Nuke.YKT, **LGPL 2.1+**.
   Unmodified upstream. See the header in `nuked/opl3.h` for credits to
   the MAME team, OPLx decap project, and others whose work made the
   emulation possible.
+- **heatshrink** (`heatshrink/heatshrink_*.[ch]`) — © Atomic Object,
+  **ISC license**. Unmodified upstream from
+  <https://github.com/atomicobject/heatshrink>. The `hs_stream.[ch]`
+  pump on top of it is original to this repo and is under the same
+  permissive terms as everything else here.
 - **Game music captures** — the `.dro` / generated `.h` files in this
   repo are derived from games whose music remains © their respective
   rightsholders (Titus Interactive for _Prehistorik 2_, id Software for

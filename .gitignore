@@ -33,3 +33,5 @@ Thumbs.db
 
 # Memory / debug logs
 /memories/
+build.log
+out.log

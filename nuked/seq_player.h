@@ -56,6 +56,36 @@ typedef struct {
 	uint32_t       total_ms;    /* nominal song length, for diagnostics        */
 } opl_song;
 
+/*  Streaming variant of opl_song: bytes are pulled on demand from a
+    caller-provided callback rather than read from a flat buffer in
+    addressable memory.  Useful when the song lives behind a
+    decompressor (e.g. heatshrink) or in non-memory-mapped flash.
+
+    The byte stream MUST be exactly what `opl_song.data` would be:
+    `codemap_len` codemap bytes followed by the (code,val) opcode
+    stream.  The player reads the codemap once at play start and
+    caches it (128 bytes) so codemap[] lookups during playback don't
+    require seeking.
+
+    next_byte()  : returns the next byte 0..255, or -1 on EOF/error.
+    rewind()     : restart the stream at byte 0.  Required iff loop=1.
+    user         : opaque context pointer passed to both callbacks.   */
+typedef struct opl_song_stream {
+	int (*next_byte)(void* user);
+	void (*rewind)(void* user);
+	void*  user;
+
+	uint16_t codemap_len;
+	uint8_t  short_code;
+	uint8_t  long_code;
+	uint32_t total_ms;
+} opl_song_stream;
+
+/*  Begin playback of a streamed song.  Same semantics as
+    seq_play_song(), but pulls bytes from the callback.  The stream
+    descriptor must outlive playback (the player keeps a pointer). */
+void seq_play_stream(const opl_song_stream* stream, int loop);
+
 /* ---- one-time initialization ---- */
 
 /*  Initialize the OPL3 synth and the player state.
