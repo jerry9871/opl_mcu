@@ -1,11 +1,11 @@
 # Top-level Makefile for the OPL3 demo (MinGW gcc on Windows).
 #
 # Project layout:
-#   nuked/             - Nuked-OPL3 reference port (portable, bit-exact)
-#   nuked_optimized/   - MCU-optimized variant of the Nuked port
-#   opal/              - Reality's Opal OPL3 (public domain, ~12 KB code)
-#   mame/              - MAME OPL3 (Burczynski/Satoh, vendored from FBNeo)
-#   mame_optimized/    - MAME OPL3 with MCU optimizations (precomputed tables, etc.)
+#   cores/nuked/             - Nuked-OPL3 reference port (portable, bit-exact)
+#   cores/nuked_optimized/   - MCU-optimized variant of the Nuked port
+#   cores/opal/              - Reality's Opal OPL3 (public domain, ~12 KB code)
+#   cores/mame/              - MAME OPL3 (Burczynski/Satoh, vendored from FBNeo)
+#   cores/adlibemu/          - DOSBox legacy OPL3 (Ken Silverman lineage, LGPL 2.1+)
 #   songs/             - embedded songs (packed opl_song format)
 #   demo_win/          - Windows demo wrapper (main + WinMM audio sink)
 #   tools/             - offline DRO -> .h converter and analysis utilities
@@ -42,29 +42,37 @@ COMMON_HDR = sequencer/seq_player.h \
 SONG_HEADERS = $(wildcard songs/*_song.h)
 
 # ---- per-core binaries ---------------------------------------------------
-all: opl_demo_nuked.exe opl_demo_opal.exe opl_demo_mame.exe
+all: opl_demo_nuked.exe opl_demo_opal.exe opl_demo_mame.exe opl_demo_adlibemu.exe
 
-opl_demo_nuked.exe: nuked/opl3.c nuked/opl3.h \
+opl_demo_nuked.exe: cores/nuked/opl3.c cores/nuked/opl3.h \
                     $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
-	$(CC) $(COMMON_CFLAGS) -Inuked -DCORE_NAME=\"nuked\" -o $@ \
-	      nuked/opl3.c $(COMMON_SRC) $(LDLIBS)
+	$(CC) $(COMMON_CFLAGS) -Icores/nuked -DCORE_NAME=\"nuked\" -o $@ \
+	      cores/nuked/opl3.c $(COMMON_SRC) $(LDLIBS)
 
-opl_demo_opal.exe: opal/opal.c \
-                   opal/opal.h opal/opl3.h \
+opl_demo_opal.exe: cores/opal/opal.c \
+                   cores/opal/opal.h cores/opal/opl3.h \
                    $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
-	$(CC) $(COMMON_CFLAGS) -Iopal -DCORE_NAME=\"opal\" -o $@ \
-	      opal/opal.c $(COMMON_SRC) $(LDLIBS)
+	$(CC) $(COMMON_CFLAGS) -Icores/opal -DCORE_NAME=\"opal\" -o $@ \
+	      cores/opal/opal.c $(COMMON_SRC) $(LDLIBS)
 
-opl_demo_mame.exe: mame/ymf262.c \
-                   mame/ymf262.h mame/opl3.h mame/mame_compat.h \
+opl_demo_mame.exe: cores/mame/ymf262.c \
+                   cores/mame/ymf262.h cores/mame/opl3.h cores/mame/mame_compat.h \
                    $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
-	$(CC) $(COMMON_CFLAGS) -Imame -DCORE_NAME=\"mame\" -w -o $@ \
-	      mame/ymf262.c $(COMMON_SRC) $(LDLIBS)
+	$(CC) $(COMMON_CFLAGS) -Icores/mame -DCORE_NAME=\"mame\" -w -o $@ \
+	      cores/mame/ymf262.c $(COMMON_SRC) $(LDLIBS)
+
+opl_demo_adlibemu.exe: cores/adlibemu/adlibemu_opl3.c cores/adlibemu/adlibemu_opl_inc.c \
+                       cores/adlibemu/adlibemu.h cores/adlibemu/adlibemu_opl_inc.h \
+                       cores/adlibemu/opl3.h cores/adlibemu/adlibemu_compat.h \
+                       $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
+	$(CC) $(COMMON_CFLAGS) -Icores/adlibemu -DCORE_NAME=\"adlibemu\" -DOPLTYPE_IS_OPL3 -w -o $@ \
+	      cores/adlibemu/adlibemu_opl3.c $(COMMON_SRC) $(LDLIBS)
 
 # Convenience aliases.
-nuked: opl_demo_nuked.exe
-opal:  opl_demo_opal.exe
-mame:  opl_demo_mame.exe
+nuked:    opl_demo_nuked.exe
+opal:     opl_demo_opal.exe
+mame:     opl_demo_mame.exe
+adlibemu: opl_demo_adlibemu.exe
 
 run: opl_demo_nuked.exe
 	./opl_demo_nuked.exe
@@ -74,4 +82,4 @@ songs: ; powershell -ExecutionPolicy Bypass -File tools/regen_songs.ps1
 clean:
 	-del /Q opl_demo*.exe 2>nul
 
-.PHONY: all run clean songs nuked opal
+.PHONY: all run clean songs nuked opal mame adlibemu
