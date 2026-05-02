@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -322,10 +323,25 @@ main(int argc, char** argv)
 		QueryPerformanceFrequency(&qpf);
 		QueryPerformanceCounter(&t0);
 
+		uint64_t sumsq      = 0;     /* signal-presence check (catches "core renders silence") */
+		int32_t  peak_abs   = 0;
+		uint64_t sample_cnt = 0;
+
 		for (uint64_t k = 0; k < total_ticks && seq_is_playing(); k++) {
 			for (int i = 0; i < FRAMES_PER_TICK; i++)
 				synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
 
+			for (int i = 0; i < FRAMES_PER_TICK * 2; i++) {
+				int32_t s = pcm[i];
+				sumsq += (uint64_t)(s * s);
+
+				int32_t a = s < 0 ? -s : s;
+
+				if (a > peak_abs)
+					peak_abs = a;
+			}
+
+			sample_cnt += FRAMES_PER_TICK * 2;
 			seq_tick(TICK_MS);
 		}
 
@@ -347,6 +363,11 @@ main(int argc, char** argv)
 		printf("  realtime ratio: %.1fx  (1.0x = exactly keeps up)\n", rt_factor);
 		printf("  per frame     : %.1f ns  (host CPU)\n", ns_per_frm);
 		printf("  CPU load      : %.2f%% of one core at %d Hz\n", cpu_pct, SAMPLE_RATE);
+		{
+			double rms = sample_cnt ? sqrt((double)sumsq / (double)sample_cnt) : 0.0;
+			printf("  signal RMS    : %.1f  (peak |s|=%ld)  -- 0 means the core rendered silence\n",
+				   rms, (long)peak_abs);
+		}
 		printf("\n");
 		printf("  rough Cortex-M scaling (very approximate, ignore caches):\n");
 		double host_ghz = 3.5;   /* assume modern x64 ~3.5 GHz; just a yardstick */

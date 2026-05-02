@@ -1413,9 +1413,11 @@ chip_write_reg(Chip* chip, uint32_t reg, uint8_t val)
 	}
 }
 
-/*  Kept for completeness / future OPL2-mono build path; OPL3 mode uses
-    chip_generate_block3() exclusively. */
-__attribute__((unused))
+/*  Mono-output path for OPL2 mode (NEW bit clear).  We dispatch to this
+    from OPL3_Generate when chip->opl3Active == 0; many OPL2-targeted
+    songs (IMF dumps, etc.) never write the 0xC0 panning bits, so if we
+    forced them through block3 every channel would multiply by maskLeft=
+    maskRight=0 and the whole song would be silent. */
 static void chip_generate_block2(Chip* chip, Bitu total, int32_t* output)
 {
 	while (total > 0) {
@@ -1698,8 +1700,12 @@ OPL3_Reset(opl3_chip* chip, uint32_t samplerate)
 	Chip* c = (Chip*)malloc(sizeof(Chip));
 	chip_init(c, /*opl3Mode=*/1);
 	chip_setup(c, samplerate);
-	/* Enable OPL3 mode (NEW bit). */
-	chip_write_reg(c, 0x105, 0x01);
+	/*  Do NOT auto-enable the OPL3 NEW bit here.  Once NEW is set, dbopl
+	    derives each channel's L/R pan masks from regC0 bits 4-5; pure-OPL2
+	    songs never write those bits and would play silent.  Songs that
+	    actually need OPL3 features (4-op pairing, second register bank)
+	    write 0x105=1 themselves; OPL3_Generate dispatches to block2 vs
+	    block3 based on the live opl3Active flag. */
 	chip->impl = c;
 }
 
@@ -1718,10 +1724,20 @@ OPL3_WriteRegBuffered(opl3_chip* chip, uint16_t reg, uint8_t val)
 void
 OPL3_Generate(opl3_chip* chip, int16_t out[2])
 {
+	Chip*   c      = (Chip*)chip->impl;
 	int32_t buf[2] = { 0, 0 };
-	chip_generate_block3((Chip*)chip->impl, 1, buf);
-	out[0] = clip_i16(buf[0]);
-	out[1] = clip_i16(buf[1]);
+
+	if (c->opl3Active) {
+		chip_generate_block3(c, 1, buf);
+		out[0] = clip_i16(buf[0]);
+		out[1] = clip_i16(buf[1]);
+
+	} else {
+		/*  OPL2 mode: block2 writes one mono sample into buf[0]; mirror
+		    it to both stereo lanes so the host audio path is unchanged. */
+		chip_generate_block2(c, 1, buf);
+		out[0] = out[1] = clip_i16(buf[0]);
+	}
 }
 
 void
