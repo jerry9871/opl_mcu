@@ -319,17 +319,16 @@ main(int argc, char** argv)
 		const uint64_t total_ticks  = (uint64_t)bench_secs * 1000u / TICK_MS;
 		const uint64_t total_frames = total_ticks * FRAMES_PER_TICK;
 
-		LARGE_INTEGER qpf, t0, t1;
-		QueryPerformanceFrequency(&qpf);
-		QueryPerformanceCounter(&t0);
-
-		uint64_t sumsq      = 0;     /* signal-presence check (catches "core renders silence") */
-		int32_t  peak_abs   = 0;
-		uint64_t sample_cnt = 0;
-
-		for (uint64_t k = 0; k < total_ticks && seq_is_playing(); k++) {
+		/*  Sample RMS / peak from a single warm tick rendered *outside*
+		    the timing region.  Just enough to catch "core renders pure
+		    silence" without adding per-sample work to the hot timer. */
+		uint64_t sumsq    = 0;
+		int32_t  peak_abs = 0;
+		{
 			for (int i = 0; i < FRAMES_PER_TICK; i++)
 				synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
+
+			seq_tick(TICK_MS);
 
 			for (int i = 0; i < FRAMES_PER_TICK * 2; i++) {
 				int32_t s = pcm[i];
@@ -340,8 +339,17 @@ main(int argc, char** argv)
 				if (a > peak_abs)
 					peak_abs = a;
 			}
+		}
+		const uint64_t rms_sample_cnt = (uint64_t)FRAMES_PER_TICK * 2u;
 
-			sample_cnt += FRAMES_PER_TICK * 2;
+		LARGE_INTEGER qpf, t0, t1;
+		QueryPerformanceFrequency(&qpf);
+		QueryPerformanceCounter(&t0);
+
+		for (uint64_t k = 0; k < total_ticks && seq_is_playing(); k++) {
+			for (int i = 0; i < FRAMES_PER_TICK; i++)
+				synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
+
 			seq_tick(TICK_MS);
 		}
 
@@ -364,7 +372,7 @@ main(int argc, char** argv)
 		printf("  per frame     : %.1f ns  (host CPU)\n", ns_per_frm);
 		printf("  CPU load      : %.2f%% of one core at %d Hz\n", cpu_pct, SAMPLE_RATE);
 		{
-			double rms = sample_cnt ? sqrt((double)sumsq / (double)sample_cnt) : 0.0;
+			double rms = rms_sample_cnt ? sqrt((double)sumsq / (double)rms_sample_cnt) : 0.0;
 			printf("  signal RMS    : %.1f  (peak |s|=%ld)  -- 0 means the core rendered silence\n",
 				   rms, (long)peak_abs);
 		}

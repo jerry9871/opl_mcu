@@ -45,15 +45,15 @@
       DB_FASTCALL) are removed or replaced with stdint types.
 */
 
-/* Force gcc to specialise these hot helpers per call site even at -O2.
- * Without this, block_body (called via SynthHandler function pointer) is
- * inlined but its inner helpers stay out-of-line and the per-sample
- * indirect-call overhead dominates -- adds ~30%% runtime vs the C++
- * template original. With it, -O2 matches or beats the C++ baseline. */
+/*  Force gcc to specialise these hot helpers per call site even at -O2.
+    Without this, block_body (called via SynthHandler function pointer) is
+    inlined but its inner helpers stay out-of-line and the per-sample
+    indirect-call overhead dominates -- adds ~30%% runtime vs the C++
+    template original. With it, -O2 matches or beats the C++ baseline. */
 #if defined(__GNUC__) || defined(__clang__)
-#  define HOT_INLINE static inline __attribute__((always_inline))
+	#define HOT_INLINE static inline __attribute__((always_inline))
 #else
-#  define HOT_INLINE static inline
+	#define HOT_INLINE static inline
 #endif
 
 #include "opl3.h"
@@ -1418,7 +1418,8 @@ chip_write_reg(Chip* chip, uint32_t reg, uint8_t val)
     songs (IMF dumps, etc.) never write the 0xC0 panning bits, so if we
     forced them through block3 every channel would multiply by maskLeft=
     maskRight=0 and the whole song would be silent. */
-static void chip_generate_block2(Chip* chip, Bitu total, int32_t* output)
+static void
+chip_generate_block2(Chip* chip, Bitu total, int32_t* output)
 {
 	while (total > 0) {
 		uint32_t samples = chip_forward_lfo(chip, (uint32_t)total);
@@ -1745,6 +1746,3 @@ OPL3_GenerateResampled(opl3_chip* chip, int16_t out[2])
 {
 	OPL3_Generate(chip, out);
 }
-
-
-
