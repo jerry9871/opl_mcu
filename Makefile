@@ -6,6 +6,7 @@
 #   cores/opal/              - Reality's Opal OPL3 (public domain, ~12 KB code)
 #   cores/mame/              - MAME OPL3 (Burczynski/Satoh, vendored from FBNeo)
 #   cores/adlibemu/          - DOSBox legacy OPL3 (Ken Silverman lineage, LGPL 2.1+)
+#   cores/dbopl/             - DOSBox dbopl, C port (GPLv2 -- not for closed firmware)
 #   songs/             - embedded songs (packed opl_song format)
 #   demo_win/          - Windows demo wrapper (main + WinMM audio sink)
 #   tools/             - offline DRO -> .h converter and analysis utilities
@@ -42,7 +43,7 @@ COMMON_HDR = sequencer/seq_player.h \
 SONG_HEADERS = $(wildcard songs/*_song.h)
 
 # ---- per-core binaries ---------------------------------------------------
-all: opl_demo_nuked.exe opl_demo_opal.exe opl_demo_mame.exe opl_demo_adlibemu.exe
+all: opl_demo_nuked.exe opl_demo_opal.exe opl_demo_mame.exe opl_demo_adlibemu.exe opl_demo_dbopl.exe
 
 opl_demo_nuked.exe: cores/nuked/opl3.c cores/nuked/opl3.h \
                     $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
@@ -68,11 +69,17 @@ opl_demo_adlibemu.exe: cores/adlibemu/adlibemu_opl3.c cores/adlibemu/adlibemu_op
 	$(CC) $(COMMON_CFLAGS) -Icores/adlibemu -DCORE_NAME=\"adlibemu\" -DOPLTYPE_IS_OPL3 -w -o $@ \
 	      cores/adlibemu/adlibemu_opl3.c $(COMMON_SRC) $(LDLIBS)
 
+opl_demo_dbopl.exe: cores/dbopl/dbopl.c cores/dbopl/opl3.h \
+                    $(COMMON_SRC) $(COMMON_HDR) $(SONG_HEADERS)
+	$(CC) $(COMMON_CFLAGS) -Icores/dbopl -DCORE_NAME=\"dbopl\" -o $@ \
+	      cores/dbopl/dbopl.c $(COMMON_SRC) $(LDLIBS)
+
 # Convenience aliases.
 nuked:    opl_demo_nuked.exe
 opal:     opl_demo_opal.exe
 mame:     opl_demo_mame.exe
 adlibemu: opl_demo_adlibemu.exe
+dbopl:    opl_demo_dbopl.exe
 
 run: opl_demo_nuked.exe
 	./opl_demo_nuked.exe
@@ -82,4 +89,4 @@ songs: ; powershell -ExecutionPolicy Bypass -File tools/regen_songs.ps1
 clean:
 	-del /Q opl_demo*.exe 2>nul
 
-.PHONY: all run clean songs nuked opal mame adlibemu
+.PHONY: all run clean songs nuked opal mame adlibemu dbopl

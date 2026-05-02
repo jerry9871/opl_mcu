@@ -48,11 +48,16 @@ opl/
 |   |   +-- opl3.h                  header-only `OPL3_*` adapter (no .c shim)
 |   |
 |   +-- adlibemu/                 DOSBox legacy OPL3 (Ken Silverman lineage, LGPL 2.1+)
-|       +-- adlibemu_opl3.c         Vendored from ValleyBell/libvgm (8-line OPL3 shim)
-|       +-- adlibemu_opl_inc.[ch]   The actual emulator (shared OPL2/OPL3 body)
-|       +-- adlibemu.h              Upstream public API
-|       +-- adlibemu_compat.h       Tiny shim replacing libvgm's stdtype/snddef/common_def
+|   |   +-- adlibemu_opl3.c         Vendored from ValleyBell/libvgm (8-line OPL3 shim)
+|   |   +-- adlibemu_opl_inc.[ch]   The actual emulator (shared OPL2/OPL3 body)
+|   |   +-- adlibemu.h              Upstream public API
+|   |   +-- adlibemu_compat.h       Tiny shim replacing libvgm's stdtype/snddef/common_def
+|   |   +-- opl3.h                  header-only `OPL3_*` adapter (no .c shim)
+|   |
+|   +-- dbopl/                    DOSBox dbopl, C port (GPLv2 -- not for closed firmware)
+|       +-- dbopl.c                 Hand-port of DOSBox's dbopl.cpp to plain C99
 |       +-- opl3.h                  header-only `OPL3_*` adapter (no .c shim)
+|       +-- LICENSE.txt
 |
 +-- heatshrink/                 <-- portable streaming decompressor (PC + MCU)
 |   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink, unmodified
@@ -97,7 +102,7 @@ directly (Nuked) or via a header-only adapter (Opal). Adding a new
 engine is a self-contained "new folder + adapter header" exercise; no
 changes anywhere else.
 
-Four engines are wired up today (`nuked_optimized` is an MCU-only
+Five engines are wired up today (`nuked_optimized` is an MCU-only
 fork of `nuked`, not a separate engine). All emulate the same Yamaha
 YMF262 (OPL3); they differ in _how faithful_ the emulation is and
 what that costs in cycles and flash.
@@ -112,12 +117,12 @@ cost](#measured-cpu-cost) for the harness and other songs.
 
 | core              | license       | runtime math                              | rhythm | 4-op | bit-exact       | `.text` (-Os) |               static `.bss` tables | per-chip RAM | ns/frame | realtime |
 | ----------------- | ------------- | ----------------------------------------- | ------ | ---- | --------------- | ------------: | ---------------------------------: | -----------: | -------: | -------: |
-| `nuked`           | LGPL 2.1+     | pure integer                              | yes    | yes  | **yes** (decap) |        7.5 KB |                                  0 | **20.5 KB**? |      482 |    42.7× |
+| `nuked`           | LGPL 2.1+     | pure integer                              | yes    | yes  | **yes** (decap) |        7.5 KB |                                  0 | **20.5 KB**? |      481 |    42.5× |
 | `nuked_optimized` | LGPL 2.1+     | pure integer                              | yes    | yes  | yes for OPL2    |         ~7 KB |                                  0 |      ~12 KB? |     297? |    68.8× |
-| `opal`            | public domain | pure integer                              | **no** | yes  | no              |        6.4 KB |                                  0 |       5.7 KB |      220 |    89.5× |
-| `adlibemu`        | LGPL 2.1+     | **`double` envelopes + libm `pow`/`sin`** | yes    | yes  | no              |       14.1 KB |           **14.6 KB** (wave + LFO) |       7.5 KB |      236 |    86.0× |
-| `mame`            | BSD-style?    | integer (FP only at init)                 | yes    | yes  | no              |       11.3 KB | **58.0 KB** (`sin_tab` + `tl_tab`) |      13.8 KB |      190 |   106.7× |
-| `dbopl`?          | GPLv2         | integer (FP only at init)                 | yes    | yes  | no              |       11.8 KB |                  9.2 KB (wave+ksl) |       5.1 KB |  **105** |  **193×**|
+| `opal`            | public domain | pure integer                              | **no** | yes  | no              |        6.4 KB |                                  0 |       5.7 KB |      222 |    92.4× |
+| `adlibemu`        | LGPL 2.1+     | **`double` envelopes + libm `pow`/`sin`** | yes    | yes  | no              |       14.1 KB |           **14.6 KB** (wave + LFO) |       7.5 KB |      239 |    85.3× |
+| `mame`            | BSD-style?    | integer (FP only at init)                 | yes    | yes  | no              |       11.3 KB | **58.0 KB** (`sin_tab` + `tl_tab`) |      13.8 KB |      192 |   106.0× |
+| `dbopl`?          | **GPLv2**?    | integer (FP only at init)                 | yes    | yes  | no              |       13.1 KB |          9.2 KB (wave+ksl+tremolo) |   **4.7 KB** |   **85** | **240×** |
 
 ? `nuked_optimized` measured on the 9-ch / OPL2 / mono profile; the full
 OPL3 build sits closer to plain `nuked` in both code size and ns/frame.
@@ -128,13 +133,16 @@ Per-chip RAM drops because the unused channels/operators are compiled out.
 `opl3_chip` (rather than as file-static globals), which is why its
 per-instance footprint is the largest even though `.bss` is zero. With
 one chip — the usual case — total RAM is ~20.5 KB.
-? `dbopl` (DOSBox, GPLv2) is **not vendored in this repo** — its license
-is incompatible with the proprietary firmware we ship this code in.
-The numbers above are from a one-off C++ wrapper (templates + member
-function pointers + namespace, so it can't be a pure-C drop-in like the
-other four) built only for benchmark comparison; see [Why not other
-engines?](#why-not-other-engines) for the rationale and `adlibemu` for
-the algorithmically equivalent LGPL-licensed alternative we _do_ ship.
+? `dbopl` lives at [`cores/dbopl/dbopl.c`](cores/dbopl/dbopl.c) as a
+hand-port of DOSBox's `dbopl.cpp` to plain C99 (templates lowered to
+`static inline` + constant args, member function pointers replaced with
+free-function pointers, namespaces stripped). The C port is **~20%
+faster** than the C++ original at -O2 (85 vs 105 ns/frame on x64), with
+identical output. **License inheritance: linking `cores/dbopl/dbopl.c`
+into your build makes the resulting binary GPLv2.** The other four cores
+(LGPL/BSD/public-domain) do not have this property -- pick whichever
+matches your distribution requirements. See
+[`cores/dbopl/LICENSE.txt`](cores/dbopl/LICENSE.txt).
 
 Add ~5–10 KB of libm (`pow`, `sin`, soft-float helpers if no FPU) on top
 of `adlibemu` if your project doesn't already link it.
@@ -174,12 +182,26 @@ of `adlibemu` if your project doesn't already link it.
     on M0/M0+** (every per-sample envelope step lowers to soft-double).
 
 - **`mame`** — _flash-for-cycles._
-  - - Fastest in the repo; full OPL3, rhythm, 4-op.
+  - - Fastest pure-integer core that doesn't carry a viral license.
   - - Inner loop is two unconditional table lookups (no branches, no fn ptrs).
   - - Pure integer at runtime; `double` only at one-shot table init.
   - ? ~58 KB of pre-flattened tables (`sin_tab` 32 KB + `tl_tab` 26 KB).
     Tight on 128/256 KB parts; comfortable on F4/F7/H7.
   - ? Not bit-exact (pre-Nuked envelope/phase model). Audibly indistinguishable.
+
+- **`dbopl`** — _fastest, smallest, GPL-encumbered._
+  - - **Fastest core in the repo** (~2.3× plain `mame`) thanks to a
+      pre-multiplied wave table that turns the inner loop into one
+      load + one multiply per operator, no envelope branches in the
+      hot path.
+  - - **Smallest per-chip RAM** (4.7 KB — less than `opal`).
+  - - Pure integer at runtime; `double` only at one-shot table init.
+      Builds clean with `arm-none-eabi-gcc -Os -mthumb` (no FPU needed).
+  - - Plays everything: full OPL3, rhythm, 4-op, panning.
+  - ? **GPLv2** — linking it makes your binary GPL. Don't pick this
+    core if you ship closed-source firmware; use `mame` (BSD) or
+    `adlibemu` (LGPL) instead.
+  - ? Not bit-exact (DOSBox heuristic envelope model).
 
 #### How an OPL3 emulator spends its time
 
@@ -291,10 +313,42 @@ calls during `init_tables`), adding ~5–10 KB of flash on top of the
 
 Useful as **a sanity check on the others** (when something sounds
 weird in `mame`, A/B against `adlibemu` to see if the same
-compromises were made in DOSBox-era emulation) and as a stand-in for
-`dbopl` benchmarks without the GPL/C++ pain. About 25% slower than
-`mame` on x64; would lose more ground on M4F because of the FP
-envelope updates, and is unbuildable on M0.
+compromises were made in DOSBox-era emulation) and as the
+LGPL-licensed alternative to `dbopl` (same family, ~3× slower but
+you can ship it in closed firmware). About 25% slower than `mame` on
+x64; would lose more ground on M4F because of the FP envelope
+updates, and is unbuildable on M0.
+
+#### `dbopl/` — fastest, GPL-encumbered
+
+[`cores/dbopl/dbopl.c`](cores/dbopl/dbopl.c) is a hand-port of
+DOSBox's `dbopl.cpp` to plain C99. The original was templated C++
+with member function pointers, namespaces, and cross-channel
+`this+1` pointer arithmetic; the C port lowers all of that to
+`static inline` bodies dispatched by free-function pointers, with
+`HOT_INLINE` (`__attribute__((always_inline))`) on the hot helpers
+so `gcc -O2` specialises the synth handlers as cleanly as the C++
+template instantiations did. **The C port runs ~20% faster than the
+C++ original** at -O2 (85 vs 105 ns/frame on x64), with byte-identical
+output.
+
+Why it's so fast: dbopl uses the WAVE*TABLEMUL strategy — the
+log-sin and exp tables are pre-multiplied at init into a single
+~6 KB `MulTable` + 16 KB `WaveTable`. The per-operator inner loop
+collapses to one indexed load and one multiply; no envelope branches,
+no function calls per sample. That's also why the per-chip RAM is
+the \_smallest* in the repo (4.7 KB) despite full OPL3 / rhythm /
+4-op support — the big tables live as static globals shared by all
+operators, not inside each `Chip`.
+
+**License inheritance.** dbopl is GPLv2. Linking
+[`cores/dbopl/dbopl.c`](cores/dbopl/dbopl.c) into your binary makes
+the combined work GPLv2. If you ship closed-source firmware, pick
+[`mame`](cores/mame/ymf262.c) (BSD-style, second fastest) or
+[`adlibemu`](cores/adlibemu/adlibemu_opl3.c) (LGPL 2.1+, same
+algorithmic family) instead. See
+[`cores/dbopl/LICENSE.txt`](cores/dbopl/LICENSE.txt) for the full
+story.
 
 #### Measured CPU cost
 
@@ -308,25 +362,24 @@ The number you get is the cost of `synth_render_sample` +
 SysTick ISRs.
 
 Sample run on a modern x64 laptop, 60 s of `metallica` (heavy
-melodic load) at 49 716 Hz stereo, 4 runs averaged (variance ? 2%):
+melodic load) at 49 716 Hz stereo, 3 runs averaged (variance ? 3%):
 
 | core              | ns per stereo frame | realtime ratio | host CPU% |
 | ----------------- | ------------------: | -------------: | --------: |
-| `nuked`           |                 482 |          42.7× |     2.34% |
+| `nuked`           |                 481 |          42.5× |     2.35% |
 | `nuked_optimized` |                 297 |          68.8× |     1.45% |
-| `adlibemu`        |                 236 |          86.0× |     1.16% |
-| `opal`            |                 220 |          89.5× |     1.12% |
-| `mame`            |                 190 |         106.7× |     0.94% |
-| `dbopl`*          |                 105 |           193× |     0.52% |
+| `adlibemu`        |                 239 |          85.3× |     1.17% |
+| `opal`            |                 222 |          92.4× |     1.09% |
+| `mame`            |                 192 |         106.0× |     0.94% |
+| `dbopl`           |              **85** |       **240×** |     0.42% |
 
 (`nuked_optimized` measured separately on a 9-ch / OPL2 / mono
-profile build; the others are full 18-ch OPL3 stereo.
-`*dbopl` is a one-off out-of-tree benchmark build — the source is
-GPLv2 so we can't ship it with closed firmware, but it's useful as a
-"how fast can this _possibly_ go on this CPU" reference. Same
-algorithmic family as `adlibemu`; the gap on x64 is mostly that
-dbopl uses 16 KB of pre-multiplied wave tables and a tighter
-operator inner loop.)
+profile build; the others are full 18-ch OPL3 stereo. `dbopl` is a
+C port of DOSBox's `dbopl.cpp`; the C version runs ~20% faster than
+the original C++ at -O2 because gcc specialises the small
+`HOT_INLINE` body wrappers as cleanly as it does template
+instantiations -- and free-function pointers are slightly cheaper to
+dispatch than C++ member-function pointers.)
 
 Don't read "`mame` beats `nuked`" as a statement about the chips —
 it's a statement about which inner loop x64 happens to schedule
@@ -345,27 +398,20 @@ if you have an FPU — see its section).
 | If…                                                                  | Use                                                                                   |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | You want to verify "did I capture this song right?"                  | `nuked` — the audio reference                                                         |
-| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame`, `adlibemu`, `nuked`, or `nuked_optimized` (not `opal`)                        |
-| You're on an MCU with ?512 KB flash                                  | `mame` — fastest and most complete                                                    |
+| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame`, `adlibemu`, `dbopl`, `nuked`, or `nuked_optimized` (not `opal`)               |
+| You're on an MCU with ?512 KB flash and ship GPL-compatible code     | `dbopl` — fastest and smallest per-chip RAM                                           |
+| You're on an MCU with ?512 KB flash and need a permissive license    | `mame` — second fastest, BSD-style                                                    |
 | You're on an MCU with ?256 KB flash                                  | `opal` (no percussion) or `nuked_optimized` (default profile)                         |
 | You're targeting strict bit-accuracy on an MCU                       | `nuked_optimized` with all defaults disabled, or plain `nuked` if you have the cycles |
-| You want a DOSBox-era second opinion on tone (M4F or higher)         | `adlibemu` — same algorithmic family as the early DOSBox SoundBlaster emulation       |
-| You need to A/B sound quality                                        | Build all four PC binaries, listen — `--once` makes it easy                           |
+| You want a DOSBox-era second opinion on tone (M4F or higher)         | `adlibemu` — LGPL alternative to `dbopl` from the same family                         |
+| You need to A/B sound quality                                        | Build all five PC binaries, listen — `--once` makes it easy                           |
 
 #### Why not other engines?
 
-- **`dbopl`** (DOSBox). Uses a similar flat-table strategy to `mame`;
-  benchmarks roughly tied. C++-heavy (templates, member function
-  pointers, namespaces, `this+1`/`this+2` channel-array arithmetic)
-  so porting to plain C is real work. **GPLv2 forces the entire
-  combined binary to GPLv2** — a serious commercial liability if
-  your firmware is closed-source. We ship `adlibemu` instead, which
-  is the same algorithmic family (DOSBox kept both around) without
-  the GPL/C++ pain.
-- **`ymfm`** (Aaron Giles). Modern C++17 unified Yamaha FM family,
-  BSD-3-Clause. Broader chip coverage than this repo needs (we only
+- **`ymfm`** (Aaron Giles, BSD-3-Clause). Modern C++17 unified Yamaha
+  FM family. Broader chip coverage than this repo needs (we only
   want OPL3). Comparable speed to `mame`/`dbopl`. Porting cost: high
-  (templates, std::array, references). Worth it only if you need
+  (templates, `std::array`, references). Worth it only if you need
   OPL2/OPN/OPN2 etc. side-by-side.
 - **`hatari` OPL** and similar legacy ports. Older, slower, less
   faithful than any of the above. Not recommended.

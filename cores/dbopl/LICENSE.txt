@@ -1,0 +1,19 @@
+dbopl.c is a C port of DOSBox's dbopl.cpp. The original C++ implementation
+is:
+
+    Copyright (C) 2002-2021  The DOSBox Team
+
+The C port (dbopl.c, opl3.h in this directory) is:
+
+    Copyright (C) 2026  silixcon
+
+Both are licensed under the GNU General Public License, version 2 or
+(at your option) any later version. The full license text is available at:
+
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+NOTE on linking: Because dbopl is GPLv2, any program that links it
+inherits GPL obligations. The other cores in this repository
+(nuked, opal, mame, adlibemu) are LGPL/BSD/public-domain and do NOT
+have this property -- they can be embedded in proprietary firmware.
+Pick the core that matches your distribution requirements.

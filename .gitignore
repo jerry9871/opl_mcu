@@ -17,7 +17,7 @@ capture/*.song.hs
 capture/*.wav
 capture/*.png
 
-# Game files (proprietary — provide your own copy)
+# Game files (proprietary ? provide your own copy)
 preh2/
 wacky/
 games/
@@ -39,5 +39,3 @@ out.log
 _commitmsg.txt
 
 # Temporary benchmark-only core (GPLv2, not redistributed)
-cores/dbopl/
-build_dbopl.bat
