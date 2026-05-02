@@ -37,3 +37,7 @@ build.log
 out.log
 
 _commitmsg.txt
+
+# Temporary benchmark-only core (GPLv2, not redistributed)
+cores/dbopl/
+build_dbopl.bat

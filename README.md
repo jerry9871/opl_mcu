@@ -117,6 +117,7 @@ cost](#measured-cpu-cost) for the harness and other songs.
 | `opal`            | public domain | pure integer                              | **no** | yes  | no              |        6.4 KB |                                  0 |       5.7 KB |      220 |    89.5× |
 | `adlibemu`        | LGPL 2.1+     | **`double` envelopes + libm `pow`/`sin`** | yes    | yes  | no              |       14.1 KB |           **14.6 KB** (wave + LFO) |       7.5 KB |      236 |    86.0× |
 | `mame`            | BSD-style?    | integer (FP only at init)                 | yes    | yes  | no              |       11.3 KB | **58.0 KB** (`sin_tab` + `tl_tab`) |      13.8 KB |      190 |   106.7× |
+| `dbopl`?          | GPLv2         | integer (FP only at init)                 | yes    | yes  | no              |       11.8 KB |                  9.2 KB (wave+ksl) |       5.1 KB |  **105** |  **193×**|
 
 ? `nuked_optimized` measured on the 9-ch / OPL2 / mono profile; the full
 OPL3 build sits closer to plain `nuked` in both code size and ns/frame.
@@ -127,6 +128,13 @@ Per-chip RAM drops because the unused channels/operators are compiled out.
 `opl3_chip` (rather than as file-static globals), which is why its
 per-instance footprint is the largest even though `.bss` is zero. With
 one chip — the usual case — total RAM is ~20.5 KB.
+? `dbopl` (DOSBox, GPLv2) is **not vendored in this repo** — its license
+is incompatible with the proprietary firmware we ship this code in.
+The numbers above are from a one-off C++ wrapper (templates + member
+function pointers + namespace, so it can't be a pure-C drop-in like the
+other four) built only for benchmark comparison; see [Why not other
+engines?](#why-not-other-engines) for the rationale and `adlibemu` for
+the algorithmically equivalent LGPL-licensed alternative we _do_ ship.
 
 Add ~5–10 KB of libm (`pow`, `sin`, soft-float helpers if no FPU) on top
 of `adlibemu` if your project doesn't already link it.
@@ -309,9 +317,16 @@ melodic load) at 49 716 Hz stereo, 4 runs averaged (variance ? 2%):
 | `adlibemu`        |                 236 |          86.0× |     1.16% |
 | `opal`            |                 220 |          89.5× |     1.12% |
 | `mame`            |                 190 |         106.7× |     0.94% |
+| `dbopl`*          |                 105 |           193× |     0.52% |
 
 (`nuked_optimized` measured separately on a 9-ch / OPL2 / mono
-profile build; the others are full 18-ch OPL3 stereo.)
+profile build; the others are full 18-ch OPL3 stereo.
+`*dbopl` is a one-off out-of-tree benchmark build — the source is
+GPLv2 so we can't ship it with closed firmware, but it's useful as a
+"how fast can this _possibly_ go on this CPU" reference. Same
+algorithmic family as `adlibemu`; the gap on x64 is mostly that
+dbopl uses 16 KB of pre-multiplied wave tables and a tighter
+operator inner loop.)
 
 Don't read "`mame` beats `nuked`" as a statement about the chips —
 it's a statement about which inner loop x64 happens to schedule
