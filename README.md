@@ -595,10 +595,19 @@ friendly short name.
 
 Two delivery channels share the same player:
 
-| Channel                    | Producer                           | Runtime                                                                         |
-| -------------------------- | ---------------------------------- | ------------------------------------------------------------------------------- |
-| **Embedded in flash**      | `dro2hdr --hs` -> `*_song.h`       | `#include` it, point an `hs_stream` at `song->hs_data`, call `seq_play_stream`. |
-| **Loaded at runtime (PC)** | `dro_pack` -> `file.dro_hs<W>l<L>` | [`demo_win/dro_load.c`](demo_win/dro_load.c) `dro_load_hs()` does the slurp.    |
+| Channel                    | Producer                           | Runtime                                                                                                                                                              |
+| -------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Embedded in flash**      | `dro2hdr --hs` -> `*_song.h`       | `#include` it, point an `hs_stream` at `song->hs_data`, call `seq_play_stream`. No malloc.                                                                           |
+| **Loaded at runtime (PC)** | `dro_pack` -> `file.dro_hs<W>l<L>` | [`demo_win/dro_load.c`](demo_win/dro_load.c) `dro_load_hs()` decompresses the whole file into an `opl_song` (PC has the RAM, keeps the file format self-describing). |
+
+The embedded path is **header-stripped at compile time**: `dro2hdr
+--hs` no longer wraps the codemap+stream in the original 26-byte DRO
+v2 file header, since every field the player needs at runtime
+(`codemap_len`, `short_code`, `long_code`, `total_ms`) is already a
+field of the emitted `opl_song_hs` struct. The MCU therefore never
+parses any header — the first decompressed byte is `codemap[0]`.
+The runtime PC path keeps the on-disk header because that file
+format must remain self-describing.
 
 Both go through:
 
@@ -784,17 +793,21 @@ whenever it has spare time.
                                                     DAC / I?S / PWM
 ```
 
-This is why `nuked_optimized/` deliberately calls `OPL3_Generate`
-(native rate) rather than `OPL3_GenerateResampled` (any rate). The
-resampler is convenient on PC but it adds per-sample interpolation
-cost for no audible benefit on the MCU. Instead, **clock your audio
-ISR as close to the chip's native 49 716 Hz as you reasonably can**
-and let the FIFO absorb whatever jitter the lower-priority producer
-introduces. That gives you bit-accurate playback for free.
+This is why the FIFO render path is what you want on the MCU: the
+chip is clocked at its native 49 716 Hz and the audio ISR just pops
+ready frames. The choice of generator (resampled vs native) is a
+compile-time switch in [`sequencer/seq_player.c`](sequencer/seq_player.c)
+that applies to **both** `synth_render_sample` and `synth_update_fifo`:
 
-(`synth_render_sample` goes through `OPL3_GenerateResampled`;
-`synth_update_fifo` calls plain `OPL3_Generate`. So the FIFO path is
-also the one to pick when you want the chip's native rate.)
+- `-DSEQ_RESAMPLE=1` (default) -> `OPL3_GenerateResampled()` at the
+  `sample_rate_hz` you passed to `synth_init()`. Convenient on PC.
+- `-DSEQ_RESAMPLE=0` -> `OPL3_Generate()` at the chip's native rate.
+  Cheaper, bit-exact w.r.t. the underlying core, recommended for
+  embedded targets that can clock the DAC near 49 716 Hz.
+
+Keeping both render paths on the same generator means you can A/B
+the inline path against the FIFO path without an apples-to-oranges
+resampler difference.
 
 If your DAC clock can't hit 49 716 Hz exactly:
 
@@ -804,8 +817,8 @@ If your DAC clock can't hit 49 716 Hz exactly:
   audible effect.
 - **24 858 Hz** (= 49 716 / 2) is the FALCON build's choice; halves the
   per-frame CPU at a tiny aliasing cost on the highest OPL voices.
-- **Anything below ~22 kHz** — use `OPL3_GenerateResampled` from the
-  reference `nuked/` port instead and accept the resampler cost.
+- **Anything below ~22 kHz** — leave `SEQ_RESAMPLE=1` (the default)
+  and let `OPL3_GenerateResampled` do the work.
 
 ### What the demo wrapper teaches you
 

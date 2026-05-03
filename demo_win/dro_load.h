@@ -29,14 +29,15 @@ void
 dro_song_free(opl_song* song);
 
 /*  Load a heatshrink-packed ".dro_hs<W>[l<L>]" file as an
-    opl_song_hs descriptor that the caller can hand to hs_stream +
-    seq_play_stream() — the same path the MCU uses for flash-embedded
-    songs.  *out_owned receives the malloc'd compressed buffer that
-    backs out_desc->hs_data; release both with dro_load_hs_free(). */
+    opl_song.  PC-only convenience: fully decompresses the file,
+    strips the 26-byte DRO v2 header, and returns the codemap +
+    opcode stream as a flat malloc'd buffer.  Free with
+    dro_song_free() (same as plain DRO loads).
+
+    The MCU build doesn't use this — embedded songs are emitted as
+    opl_song_hs (header-stripped at compile time by `dro2hdr --hs`)
+    and consumed via hs_stream + seq_play_stream() with no malloc. */
 int
-dro_load_hs(const char* path, opl_song_hs* out_desc,
-			uint8_t** out_owned);
-void
-dro_load_hs_free(opl_song_hs* desc, uint8_t* owned);
+dro_load_hs(const char* path, opl_song* out_song);
 
 #endif

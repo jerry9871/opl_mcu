@@ -63,6 +63,41 @@
 	#define SEQ_ISR_ENABLE()  ((void)0)
 #endif
 
+/* ---- resampling switch -------------------------------------------- */
+
+/*  Both real-time render paths (inline `synth_render_sample` and FIFO
+    `synth_update_fifo`) go through the same generator, so they share a
+    single compile-time switch:
+
+      SEQ_RESAMPLE = 1 (default) -> OPL3_GenerateResampled(): one frame
+                                    at the host sample_rate_hz passed
+                                    to synth_init().  Use when the
+                                    audio sink runs at an arbitrary
+                                    rate (44100, 48000, ...).
+
+      SEQ_RESAMPLE = 0           -> OPL3_Generate(): one frame at the
+                                    chip's native rate (49716 Hz for
+                                    most cores).  Cheaper -- no
+                                    resampler accumulator, no extra
+                                    sample on phase wrap -- and bit-
+                                    exact w.r.t. the underlying core.
+                                    Use when your DAC clock is set to
+                                    the chip's native rate (or when
+                                    you don't care about the small
+                                    pitch offset).
+
+    Both paths must use the same value, otherwise the FIFO and the
+    inline path would disagree on what one frame means.  */
+#ifndef SEQ_RESAMPLE
+	#define SEQ_RESAMPLE 1
+#endif
+
+#if SEQ_RESAMPLE
+	#define SEQ_GENERATE(chip, f) OPL3_GenerateResampled((chip), (f))
+#else
+	#define SEQ_GENERATE(chip, f) OPL3_Generate((chip), (f))
+#endif
+
 /* ---- module state -------------------------------------------------- */
 
 static opl3_chip          g_chip;
@@ -301,7 +336,7 @@ void
 synth_render_sample(int16_t* out_l, int16_t* out_r)
 {
 	int16_t f[2];
-	OPL3_GenerateResampled(&g_chip, f);
+	SEQ_GENERATE(&g_chip, f);
 	*out_l = f[0];
 	*out_r = f[1];
 }
@@ -332,7 +367,7 @@ synth_update_fifo(void)
 			break;
 
 		int16_t f[2];
-		OPL3_Generate(&g_chip, f);        /* f[0] = L, f[1] = R */
+		SEQ_GENERATE(&g_chip, f);         /* f[0] = L, f[1] = R */
 
 		uint32_t slot = head & SEQ_FIFO_MASK;
 

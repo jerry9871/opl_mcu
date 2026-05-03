@@ -130,10 +130,21 @@ void seq_tick(uint32_t ms_elapsed);
     Call from your DAC / I2S half-buffer IRQ.
     For mono output, mix:  out = (l + r) >> 1;
 
-    Inline path: renders one frame on the spot via
-    OPL3_GenerateResampled().  No FIFO; the producer and consumer
-    are the same thread.  This is what the PC demo uses and is also
-    fine on an MCU if your audio IRQ has the cycles.
+    Inline path: renders one frame on the spot.  No FIFO; the
+    producer and consumer are the same thread.  This is what the PC
+    demo uses and is also fine on an MCU if your audio IRQ has the
+    cycles.
+
+    The renderer used by both this path and the FIFO path below is
+    selected at compile time:
+        -DSEQ_RESAMPLE=1 (default) -> OPL3_GenerateResampled() at the
+                                      sample_rate_hz passed to
+                                      synth_init().
+        -DSEQ_RESAMPLE=0           -> OPL3_Generate() at the chip's
+                                      native rate (~49716 Hz);
+                                      cheaper, bit-exact w.r.t. the
+                                      core, but you must clock your
+                                      DAC accordingly.
 
     For an alternative producer/consumer split (heavy synth runs in
     a low-priority context, light ISR pops one ready frame), see

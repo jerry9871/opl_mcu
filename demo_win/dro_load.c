@@ -192,21 +192,23 @@ dro_song_free(opl_song* song)
 /* --------------------------------------------------------------- */
 /*  Load a heatshrink-packed DRO file as an opl_song_hs descriptor.*/
 /*                                                                 */
-/*  *out_desc is filled so the caller can hand it to hs_stream and */
-/*  seq_play_stream() exactly the same way as a flash-embedded     */
-/*  opl_song_hs.  *out_owned receives the malloc'd compressed-file */
-/*  buffer; pass it to dro_load_hs_free() when done.               */
+/* --------------------------------------------------------------- */
+/*  Load a heatshrink-packed ".dro_hs<W>[l<L>]" file as an         */
+/*  opl_song.  We fully decompress the file into RAM, parse the    */
+/*  26-byte DRO v2 header to recover metadata, and return the      */
+/*  trailing codemap+stream bytes as a flat opl_song.              */
 /*                                                                 */
-/*  We extract the runtime metadata (codemap_len / short_code /    */
-/*  long_code / total_ms) by peeking the first 26 decompressed     */
-/*  bytes through a throw-away hs_stream — same code path the      */
-/*  player itself uses.                                            */
+/*  This is the PC-side runtime path; the embedded build instead   */
+/*  consumes opl_song_hs descriptors (emitted by dro2hdr --hs)     */
+/*  whose payload is *just* the codemap+stream -- no DRO header,   */
+/*  since the metadata is baked into the descriptor at compile     */
+/*  time.  Keeping the runtime path eager keeps the file format    */
+/*  self-describing while letting the streaming code stay simple.  */
 /* --------------------------------------------------------------- */
 int
-dro_load_hs(const char* path, opl_song_hs* out_desc, uint8_t** out_owned)
+dro_load_hs(const char* path, opl_song* out_song)
 {
-	memset(out_desc, 0, sizeof(*out_desc));
-	*out_owned = NULL;
+	memset(out_song, 0, sizeof(*out_song));
 
 	int wbits, lbits;
 
@@ -229,56 +231,70 @@ dro_load_hs(const char* path, opl_song_hs* out_desc, uint8_t** out_owned)
 		return 3;
 	}
 
+	/*  Decompress everything to a growable buffer.  PC-side, so a
+	    plain doubling realloc is fine. */
 	hs_stream st;
 	hs_stream_init(&st, file, (uint32_t)file_len, dec);
 
-	uint8_t hdr[26];
+	size_t   cap = file_len * 4u + 64u;
+	size_t   n   = 0;
+	uint8_t* buf = malloc(cap);
 
-	for (int i = 0; i < 26; i++) {
+	for (;;) {
 		int b = hs_stream_next(&st);
 
-		if (b < 0) {
-			fprintf(stderr, "%s: short decompress (header)\n", path);
-			heatshrink_decoder_free(dec);
-			free(file);
-			return 4;
+		if (b < 0)
+			break;
+
+		if (n >= cap) {
+			cap *= 2;
+			buf  = realloc(buf, cap);
 		}
 
-		hdr[i] = (uint8_t)b;
+		buf[n++] = (uint8_t)b;
 	}
 
 	heatshrink_decoder_free(dec);
+	free(file);
 
-	uint32_t v = (uint32_t)hdr[8] | ((uint32_t)hdr[9] << 8)
-				 | ((uint32_t)hdr[10] << 16) | ((uint32_t)hdr[11] << 24);
-
-	if (memcmp(hdr, "DBRAWOPL", 8) != 0 || v != 2) {
+	if (n < 26 || memcmp(buf, "DBRAWOPL", 8) != 0) {
 		fprintf(stderr, "%s: not a DRO v2 file inside\n", path);
-		free(file);
+		free(buf);
+		return 4;
+	}
+
+	uint32_t v = (uint32_t)buf[8]  | ((uint32_t)buf[9]  << 8)
+				 | ((uint32_t)buf[10] << 16) | ((uint32_t)buf[11] << 24);
+
+	if (v != 2) {
+		fprintf(stderr, "%s: DRO version %u, expected 2\n", path, v);
+		free(buf);
 		return 5;
 	}
 
-	uint32_t lm = (uint32_t)hdr[16] | ((uint32_t)hdr[17] << 8)
-				  | ((uint32_t)hdr[18] << 16) | ((uint32_t)hdr[19] << 24);
+	uint32_t lm = (uint32_t)buf[16] | ((uint32_t)buf[17] << 8)
+				  | ((uint32_t)buf[18] << 16) | ((uint32_t)buf[19] << 24);
 
-	out_desc->hs_data      = file;
-	out_desc->hs_len       = (uint32_t)file_len;
-	out_desc->total_ms     = lm;
-	out_desc->codemap_len  = hdr[25];
-	out_desc->short_code   = hdr[23];
-	out_desc->long_code    = hdr[24];
-	out_desc->hs_window    = (uint8_t)wbits;
-	out_desc->hs_lookahead = (uint8_t)lbits;
+	uint8_t  sc    = buf[23];
+	uint8_t  lc    = buf[24];
+	uint8_t  cmLen = buf[25];
 
-	*out_owned = file;
+	if (n < 26u + cmLen) {
+		fprintf(stderr, "%s: truncated payload\n", path);
+		free(buf);
+		return 6;
+	}
+
+	/*  Move codemap+stream to the front, then shrink the allocation. */
+	size_t payload = n - 26u;
+	memmove(buf, buf + 26, payload);
+	buf = realloc(buf, payload ? payload : 1);
+
+	out_song->data        = buf;
+	out_song->data_len    = (uint32_t)payload;
+	out_song->codemap_len = cmLen;
+	out_song->short_code  = sc;
+	out_song->long_code   = lc;
+	out_song->total_ms    = lm;
 	return 0;
-}
-
-void
-dro_load_hs_free(opl_song_hs* desc, uint8_t* owned)
-{
-	if (desc)
-		memset(desc, 0, sizeof(*desc));
-
-	free(owned);
 }

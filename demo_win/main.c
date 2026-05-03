@@ -105,10 +105,6 @@ hs_rewind_cb(void* user)
 	hs_stream* st = (hs_stream*)user;
 
 	hs_stream_rewind(st);
-
-	/* re-skip the 26-byte DRO file header on each rewind */
-	for (int i = 0; i < 26; i++)
-		(void)hs_stream_next(st);
 }
 
 /*  Wire an opl_song_hs through hs_stream into seq_play_stream().
@@ -128,10 +124,6 @@ start_hs_playback(const opl_song_hs* desc,
 	*hs_dec_out = dec;
 
 	hs_stream_init(&g_hs, desc->hs_data, desc->hs_len, dec);
-
-	/* skip the 26-byte DRO file header */
-	for (int i = 0; i < 26; i++)
-		(void)hs_stream_next(&g_hs);
 
 	g_opl_stream.next_byte   = hs_byte_cb;
 	g_opl_stream.rewind      = hs_rewind_cb;
@@ -240,37 +232,28 @@ main(int argc, char** argv)
 	opl_song dro_song = {0};
 	int      dro_song_loaded = 0;
 
-	opl_song_hs file_hs   = {0};
-	uint8_t*    file_hs_buf = NULL;
-
 	heatshrink_decoder* hs_dec = NULL;
 
 	if (dro) {
-		/*  Direct file path on the command line.  Two cases:
-		       .dro_hs* ? stream via hs_stream + seq_play_stream
-		                  (same path the MCU uses).
-		       .dro     ? flat buffer + seq_play_song. */
+		/*  Direct file path on the command line.  Both .dro and
+		    .dro_hs* go through dro_load*() into a flat opl_song +
+		    seq_play_song(); embedded packed songs are the only
+		    consumer of the streaming hs_stream path. */
 		const char* ext = strrchr(dro, '.');
 		int is_hs = ext && strncmp(ext, ".dro_hs", 7) == 0;
 
 		if (is_hs) {
-			if (dro_load_hs(dro, &file_hs, &file_hs_buf) != 0) {
+			if (dro_load_hs(dro, &dro_song) != 0) {
 				audio_close();
 				return 1;
 			}
 
-			printf("  song        : %s (%u B compressed, %u ms, hs=w%d/l%d)\n",
-				   dro, file_hs.hs_len, file_hs.total_ms,
-				   file_hs.hs_window, file_hs.hs_lookahead);
+			dro_song_loaded = 1;
+			printf("  song        : %s (%u bytes decompressed, %u ms)\n",
+				   dro, dro_song.data_len, dro_song.total_ms);
 			printf("  loop        : %s\n",
 				   loop ? "yes (Ctrl+C to stop)" : "no");
-
-			if (start_hs_playback(&file_hs, &hs_dec, loop) != 0) {
-				fprintf(stderr, "failed to alloc hs decoder\n");
-				dro_load_hs_free(&file_hs, file_hs_buf);
-				audio_close();
-				return 1;
-			}
+			seq_play_song(&dro_song, loop);
 
 		} else {
 			if (dro_load(dro, &dro_song) != 0) {
@@ -421,9 +404,6 @@ main(int argc, char** argv)
 
 	if (dro_song_loaded)
 		dro_song_free(&dro_song);
-
-	if (file_hs_buf)
-		dro_load_hs_free(&file_hs, file_hs_buf);
 
 	if (hs_dec)
 		heatshrink_decoder_free(hs_dec);

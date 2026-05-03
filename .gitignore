@@ -11,7 +11,7 @@ opl_demo.exe
 
 # DOSBox capture artifacts
 capture/*.dro
-capture/*.dro.hs
+capture/*.dro_hs*
 capture/*.song
 capture/*.song.hs
 capture/*.wav
