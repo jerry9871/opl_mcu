@@ -60,7 +60,6 @@
 
 #include <math.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* ===== upstream typedefs / config ======================================== */
@@ -1692,13 +1691,12 @@ clip_i16(int32_t s)
 void
 OPL3_Reset(opl3_chip* chip, uint32_t samplerate)
 {
-	if (chip->impl) {
-		free(chip->impl);
-		chip->impl = NULL;
-	}
+	_Static_assert(sizeof(struct Chip) <= DBOPL_CHIP_BYTES,
+				   "DBOPL_CHIP_BYTES is too small for the current Chip layout; "
+				   "bump it in cores/dbopl/opl3.h");
 
 	init_tables();
-	Chip* c = (Chip*)malloc(sizeof(Chip));
+	Chip* c = (Chip*)chip->storage;
 	chip_init(c, /*opl3Mode=*/1);
 	chip_setup(c, samplerate);
 	/*  Do NOT auto-enable the OPL3 NEW bit here.  Once NEW is set, dbopl
@@ -1707,25 +1705,24 @@ OPL3_Reset(opl3_chip* chip, uint32_t samplerate)
 	    actually need OPL3 features (4-op pairing, second register bank)
 	    write 0x105=1 themselves; OPL3_Generate dispatches to block2 vs
 	    block3 based on the live opl3Active flag. */
-	chip->impl = c;
 }
 
 void
 OPL3_WriteReg(opl3_chip* chip, uint16_t reg, uint8_t val)
 {
-	chip_write_reg((Chip*)chip->impl, reg, val);
+	chip_write_reg((Chip*)chip->storage, reg, val);
 }
 
 void
 OPL3_WriteRegBuffered(opl3_chip* chip, uint16_t reg, uint8_t val)
 {
-	chip_write_reg((Chip*)chip->impl, reg, val);
+	chip_write_reg((Chip*)chip->storage, reg, val);
 }
 
 void
 OPL3_Generate(opl3_chip* chip, int16_t out[2])
 {
-	Chip*   c      = (Chip*)chip->impl;
+	Chip*   c      = (Chip*)chip->storage;
 	int32_t buf[2] = { 0, 0 };
 
 	if (c->opl3Active) {

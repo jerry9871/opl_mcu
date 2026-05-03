@@ -622,15 +622,15 @@ the OPL register stream — see the comments in
 
 ### Files to copy / link
 
-| File                                                                | Why                                           |
-| ------------------------------------------------------------------- | --------------------------------------------- |
-| `<core>/opl3.c`, `<core>/opl3.h` (or `opal/opal.c` + `opal/opl3.h`) | Synth                                         |
+| File                                                                | Why                                                     |
+| ------------------------------------------------------------------- | ------------------------------------------------------- |
+| `<core>/opl3.c`, `<core>/opl3.h` (or `opal/opal.c` + `opal/opl3.h`) | Synth                                                   |
 | `sequencer/seq_player.c`, `sequencer/seq_player.h`                  | Sequencer (inline + FIFO render paths both compiled in) |
-| `songs/opl_song_hs.h`                                               | Descriptor type for packed songs              |
-| `songs/<your_song>_song.h`                                          | The music                                     |
-| `heatshrink/heatshrink_decoder.c`, `.h`                             | Streaming decompressor (only if using `--hs`) |
-| `heatshrink/heatshrink_common.h`, `heatshrink_config.h`             | Decoder build-time config                     |
-| `heatshrink/hs_stream.c`, `.h`                                      | Generic byte pump on top of the decoder       |
+| `songs/opl_song_hs.h`                                               | Descriptor type for packed songs                        |
+| `songs/<your_song>_song.h`                                          | The music                                               |
+| `heatshrink/heatshrink_decoder.c`, `.h`                             | Streaming decompressor (only if using `--hs`)           |
+| `heatshrink/heatshrink_common.h`, `heatshrink_config.h`             | Decoder build-time config                               |
+| `heatshrink/hs_stream.c`, `.h`                                      | Generic byte pump on top of the decoder                 |
 
 `<core>` is one of `nuked/`, `nuked_optimized/`, or `opal/`. The
 sequencer is the same file in all three cases; you select the engine

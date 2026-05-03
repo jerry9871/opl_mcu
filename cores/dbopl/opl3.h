@@ -22,11 +22,19 @@
 extern "C" {
 #endif
 
-/*  Opaque -- caller never touches the impl pointer. The actual chip state
-    lives on the heap so this header doesn't have to include the full
-    internal layout. */
+/*  All chip state lives directly inside opl3_chip -- no heap, no
+    malloc, no init-time allocation.  The internal Chip struct is
+    private to dbopl.c; we reserve a byte buffer here that is large
+    enough to hold it, with 8-byte alignment for the function pointers
+    and 64-bit-aligned tables inside.
+
+    DBOPL_CHIP_BYTES is comfortably larger than the current sizeof(Chip)
+    (~4.7 KB on 64-bit, ~4.5 KB on 32-bit) -- a static_assert in dbopl.c
+    catches any future struct growth at compile time. */
+#define DBOPL_CHIP_BYTES 5120
+
 typedef struct opl3_chip {
-	void* impl;
+	_Alignas(8) unsigned char storage[DBOPL_CHIP_BYTES];
 } opl3_chip;
 
 void OPL3_Reset(opl3_chip* chip, uint32_t samplerate);
