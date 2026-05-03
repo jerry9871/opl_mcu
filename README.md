@@ -27,8 +27,9 @@ opl/
 +-- sequencer/                  <-- shared OPL sequence player (PC + MCU)
 |   +-- seq_player.c              tick + render API; one file, every core
 |   +-- seq_player.h              public interface -- read this file first
-|                                 (define -DSEQ_PLAYER_FIFO on the MCU
-|                                  to get the producer/consumer split)
+|                                 (inline render *and* a producer/consumer
+|                                  FIFO are both compiled in; pick one
+|                                  per call site)
 |
 +-- cores/                      <-- chip emulators, one folder each
 |   +-- nuked/                    portable reference build (PC + MCU)
@@ -499,7 +500,14 @@ void seq_silence(void);                                // emergency mute
 int  seq_is_playing(void);
 
 void seq_tick(uint32_t ms_elapsed);                    // call every ~1 ms
-void synth_render_sample(int16_t *l, int16_t *r);      // call at sample_rate_hz
+
+/* render path A -- inline; call directly in the audio ISR */
+void synth_render_sample(int16_t *l, int16_t *r);
+
+/* render path B -- producer/consumer FIFO; call A from the audio ISR
+                    OR call B (and refill) from a low-priority task */
+void synth_update_fifo(void);                          // producer
+void synth_get_fifo_sample(int16_t *l, int16_t *r);    // consumer
 ```
 
 The `opl_song` payload is byte-for-byte the same as a DOSBox DRO v2
@@ -515,12 +523,39 @@ whose payload is a **heatshrink-compressed** DRO stream — typically
 same ISRs — only the byte source differs. See _Compressed songs_
 below.
 
-That's it. Two real-time entry points:
+That's it. Two real-time entry points (plus an optional third for the
+FIFO render path):
 
-- **`seq_tick(1)`** in a 1 ms timer ISR â€” walks the song, fires due
+- **`seq_tick(1)`** in a 1 ms timer ISR — walks the song, fires due
   events with `OPL3_WriteRegBuffered`. O(1) amortised; cheap.
-- **`synth_render_sample(&l, &r)`** in your DAC half-buffer-empty IRQ â€”
-  produces one PCM frame.
+- **`synth_render_sample(&l, &r)`** in your DAC half-buffer-empty IRQ —
+  produces one PCM frame inline (calls `OPL3_GenerateResampled`).
+  Simplest possible code path; fine when the audio IRQ has the cycles.
+- **`synth_update_fifo()` + `synth_get_fifo_sample(&l, &r)`** — if you
+  prefer to keep the audio IRQ to one FIFO pop and run the heavy
+  synth in a lower-priority context, call `synth_update_fifo()` after
+  each `seq_tick(1)` and `synth_get_fifo_sample()` from the DAC IRQ.
+  On underrun the previous frame is held to avoid clicks. Both render
+  paths are always compiled in; pick whichever you call from your
+  audio ISR and ignore the other.
+
+Both paths share two short critical sections inside `seq_player.c`
+that must not be preempted by the audio ISR (the OPL register write
+in `seq_tick`, and the ring slot/head publish in `synth_update_fifo`).
+They are bracketed with `SEQ_ISR_DISABLE()` / `SEQ_ISR_ENABLE()`
+macro hooks that default to no-ops; on a Cortex-M target wire them
+to CMSIS on the compile command line:
+
+```
+-DSEQ_ISR_DISABLE=__disable_irq -DSEQ_ISR_ENABLE=__enable_irq
+```
+
+or, to mask only the audio IRQ vector:
+
+```c
+#define SEQ_ISR_DISABLE() NVIC_DisableIRQ(MY_AUDIO_IRQn)
+#define SEQ_ISR_ENABLE()  NVIC_EnableIRQ(MY_AUDIO_IRQn)
+```
 
 ### Songs
 
@@ -590,7 +625,7 @@ the OPL register stream — see the comments in
 | File                                                                | Why                                           |
 | ------------------------------------------------------------------- | --------------------------------------------- |
 | `<core>/opl3.c`, `<core>/opl3.h` (or `opal/opal.c` + `opal/opl3.h`) | Synth                                         |
-| `sequencer/seq_player.c`, `sequencer/seq_player.h`                  | Sequencer (build with `-DSEQ_PLAYER_FIFO`)    |
+| `sequencer/seq_player.c`, `sequencer/seq_player.h`                  | Sequencer (inline + FIFO render paths both compiled in) |
 | `songs/opl_song_hs.h`                                               | Descriptor type for packed songs              |
 | `songs/<your_song>_song.h`                                          | The music                                     |
 | `heatshrink/heatshrink_decoder.c`, `.h`                             | Streaming decompressor (only if using `--hs`) |
@@ -621,12 +656,13 @@ you need without `--hs` (`tools/dro2hdr.exe in.dro out.h sym`) and
 call `seq_play_song()` instead of `seq_play_stream()`. The plain
 path has zero new dependencies on top of the original sequencer.
 
-Plus `cmsis_gcc.h` (from your CMSIS pack) and a small byte FIFO that
-exposes the `fifo_init` / `fifo_put_buf` / `fifo_get_buf` /
-`FIFO_FREECOUNT` interface used by `sequencer/seq_player.c` when
-built with `-DSEQ_PLAYER_FIFO`.
-Drop in your project's existing FIFO or vendor any single-producer /
-single-consumer ring of your choice.
+The FIFO render path is built in unconditionally and uses a local
+lock-free SPSC ring of stereo frames (no external `fifo.h`, no CMSIS
+dependency, no malloc). Tune its size with `-DSEQ_FIFO_FRAMES=N`
+(power of two; defaults to 1024 frames ? 20 ms @ 49 716 Hz). Wire
+the `SEQ_ISR_DISABLE` / `SEQ_ISR_ENABLE` hooks to whatever your
+platform uses to mask the audio IRQ — see the snippet at the top of
+this section.
 
 (If you'd rather start from the unmodified reference port, swap
 `nuked_optimized/` for `nuked/` everywhere above; you then don't need
@@ -705,38 +741,45 @@ void boot(void)
 void on_systick_1ms(void)             // 1 kHz low-priority timer ISR
 {
     seq_tick(1);
-    synth_update();                   // refill the sample FIFO
+    synth_update_fifo();              // refill the sample FIFO
 }
 
 void on_dac_sample(void)              // ~50 kHz high-priority DAC ISR
 {
     int16_t l, r;
-    synth_render_sample(&l, &r);      // O(1): pop one frame from the FIFO
+    synth_get_fifo_sample(&l, &r);    // O(1): pop one frame from the FIFO
     dac_write(l, r);                  // or  dac_mono((l + r) >> 1);
 }
 ```
 
-The sample FIFO between `synth_update()` and `synth_render_sample()`
-is what makes this safe: the DAC ISR is guaranteed to find a frame
-ready every time, no matter how long the previous `seq_tick()` took.
-The two ISRs share only the `opl3_chip` struct and the FIFO; on a
-single-core MCU no locking is needed (the producer briefly masks IRQs
-around the FIFO write — see `sequencer/seq_player.c`). On a
-multi-core MCU put both on the same core.
+The sample FIFO between `synth_update_fifo()` and
+`synth_get_fifo_sample()` is what makes this safe: the DAC ISR is
+guaranteed to find a frame ready every time, no matter how long the
+previous `seq_tick()` took. The two ISRs share only the `opl3_chip`
+struct and the FIFO; on a single-core MCU the `SEQ_ISR_DISABLE` /
+`SEQ_ISR_ENABLE` hooks (see _Files to copy / link_ above) handle
+the two short critical sections. On a multi-core MCU put both ISRs
+on the same core.
+
+If you'd rather skip the FIFO and call the synth straight from the
+DAC IRQ, use `synth_render_sample(&l, &r)` in `on_dac_sample` and
+remove the `synth_update_fifo()` call from `on_systick_1ms`. The ISR
+guard hooks still apply (they protect the OPL register write inside
+`seq_tick` from the inline render in the DAC ISR).
 
 ### Sample-rate choices and the FIFO
 
-The MCU build is deliberately structured so the audio ISR is **as
-cheap as physically possible**: it pops one stereo frame from a small
-ring and returns. All synth work — the expensive part — happens in a
-lower-priority context that calls `synth_update()` to refill the ring
+The recommended MCU layout keeps the audio ISR **as cheap as
+physically possible**: it pops one stereo frame from a small ring and
+returns. All synth work — the expensive part — happens in a
+lower-priority context that calls `synth_update_fifo()` to refill the ring
 whenever it has spare time.
 
 ```
   low priority                                high priority
   --------------------------------            -------------------------
   seq_tick(1)        ? OPL register writes
-  synth_update()     ? OPL3_Generate ? push   pop ? synth_render_sample()
+  synth_update_fifo()? OPL3_Generate ? push   pop ? synth_get_fifo_sample()
                           frames into FIFO            ?
                                                     DAC / I?S / PWM
 ```
@@ -748,6 +791,10 @@ cost for no audible benefit on the MCU. Instead, **clock your audio
 ISR as close to the chip's native 49 716 Hz as you reasonably can**
 and let the FIFO absorb whatever jitter the lower-priority producer
 introduces. That gives you bit-accurate playback for free.
+
+(`synth_render_sample` goes through `OPL3_GenerateResampled`;
+`synth_update_fifo` calls plain `OPL3_Generate`. So the FIFO path is
+also the one to pick when you want the chip's native rate.)
 
 If your DAC clock can't hit 49 716 Hz exactly:
 
