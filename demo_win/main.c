@@ -319,28 +319,36 @@ main(int argc, char** argv)
 		const uint64_t total_ticks  = (uint64_t)bench_secs * 1000u / TICK_MS;
 		const uint64_t total_frames = total_ticks * FRAMES_PER_TICK;
 
-		/*  Sample RMS / peak from a single warm tick rendered *outside*
-		    the timing region.  Just enough to catch "core renders pure
-		    silence" without adding per-sample work to the hot timer. */
+		/*  Sample RMS / peak from a few warm ticks rendered *outside*
+		    the timing region.  The very first tick fires the song's
+		    init burst (register loads with delay 0) so we need at
+		    least one tick of register writes before the rendered
+		    samples carry signal.  500 ticks = 0.5 s of warm-up,
+		    which is comfortably past the longest init burst we have
+		    in the song bank. */
 		uint64_t sumsq    = 0;
 		int32_t  peak_abs = 0;
 		{
-			for (int i = 0; i < FRAMES_PER_TICK; i++)
-				synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
+			enum { WARM_TICKS = 500 };
 
-			seq_tick(TICK_MS);
+			for (int t = 0; t < WARM_TICKS; t++) {
+				seq_tick(TICK_MS);
 
-			for (int i = 0; i < FRAMES_PER_TICK * 2; i++) {
-				int32_t s = pcm[i];
-				sumsq += (uint64_t)(s * s);
+				for (int i = 0; i < FRAMES_PER_TICK; i++)
+					synth_render_sample(&pcm[2 * i + 0], &pcm[2 * i + 1]);
 
-				int32_t a = s < 0 ? -s : s;
+				for (int i = 0; i < FRAMES_PER_TICK * 2; i++) {
+					int32_t s = pcm[i];
+					sumsq += (uint64_t)(s * s);
 
-				if (a > peak_abs)
-					peak_abs = a;
+					int32_t a = s < 0 ? -s : s;
+
+					if (a > peak_abs)
+						peak_abs = a;
+				}
 			}
 		}
-		const uint64_t rms_sample_cnt = (uint64_t)FRAMES_PER_TICK * 2u;
+		const uint64_t rms_sample_cnt = (uint64_t)FRAMES_PER_TICK * 2u * 500u;
 
 		LARGE_INTEGER qpf, t0, t1;
 		QueryPerformanceFrequency(&qpf);

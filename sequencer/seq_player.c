@@ -6,34 +6,32 @@
     is exactly what you want on a microcontroller; multi-song mixing
     is out of scope here.
 
-    Two render strategies are available; pick one at compile time.
+    Two render strategies are provided side by side; pick one at the
+    call site.
 
-      - Default (PC build):  synth_render_sample() calls
-        OPL3_GenerateResampled() inline.  No FIFO, no separate
-        producer.  Simplest possible code path.
+      - synth_render_sample()       -- inline, no FIFO; calls
+                                       OPL3_GenerateResampled() right
+                                       in the audio ISR.  Simplest
+                                       possible code path.
 
-      - -DSEQ_PLAYER_FIFO (MCU build):  synth_update() bulk-renders
-        OPL3 frames into a sample FIFO from a low-priority context;
-        synth_render_sample() pops one frame in the audio ISR and
-        holds the previous frame on underrun.  The producer guards
-        the FIFO put with __disable_irq()/__enable_irq() because the
-        underlying byte FIFO uses non-atomic counter updates; the
-        audio ISR pops without further guarding (it cannot be
-        preempted by the producer).  Requires fifo.h and cmsis_gcc.h
-        on the include path.
+      - synth_update_fifo() +       -- producer/consumer split via a
+        synth_get_fifo_sample()        local lock-free SPSC ring of
+                                       stereo frames.  The producer
+                                       runs in the sequencer task,
+                                       the consumer pops one frame
+                                       in the audio ISR and holds the
+                                       previous frame on underrun.
+
+    Both APIs are always compiled.  The FIFO is single-producer /
+    single-consumer with head and tail indices treated as plain
+    integers; no interrupt guards are needed as long as the producer
+    and the consumer each run in their own context.  The ring lives
+    in plain .bss -- no CCM/DTCM attribute, no CMSIS dependency, no
+    external fifo.h.  Place it in fast RAM via your linker script if
+    you like.
 */
 #include "seq_player.h"
 #include "opl3.h"
-
-#ifdef SEQ_PLAYER_FIFO
-	#include "fifo.h"
-	#include "cmsis_gcc.h"
-	#ifndef SEQ_FAST_SECTION
-		#define SEQ_FAST_SECTION __attribute__((section(".ccm")))
-	#endif
-#else
-	#define SEQ_FAST_SECTION
-#endif
 
 /* ---- module state -------------------------------------------------- */
 
@@ -50,21 +48,28 @@ static int32_t           g_due_ms;     /* ms until next event fires    */
 static uint8_t           g_loop;
 static uint8_t           g_playing;
 
-#ifdef SEQ_PLAYER_FIFO
-	/*  Sample FIFO between the (low-priority) sequencer/synth and the
-	(high-priority) audio ISR consumer.  See file header for details.
-	One frame = stereo pair (int16 L + int16 R = 4 bytes).             */
-	#ifndef SEQ_FIFO_FRAMES
-		#define SEQ_FIFO_FRAMES 1024u
-	#endif
-	#define SEQ_FIFO_BYTES   (SEQ_FIFO_FRAMES * 4u)
-	#define SEQ_FRAME_BYTES  4u
+/* ---- local SPSC frame ring ---------------------------------------- */
 
-	static struct fifo       g_fifo;
-	static int16_t           g_last_l;     /* last popped frame, used to   */
-	static int16_t           g_last_r;     /* hold output on underrun      */
-	static seq_key_cb        g_key_cb;     /* optional visualizer hook     */
+/*  Power-of-two so the modulo collapses to a mask.  1024 frames @
+    49716 Hz is ~20 ms of headroom; tune via -DSEQ_FIFO_FRAMES if you
+    need more or less. */
+#ifndef SEQ_FIFO_FRAMES
+	#define SEQ_FIFO_FRAMES 1024u
 #endif
+#if (SEQ_FIFO_FRAMES & (SEQ_FIFO_FRAMES - 1u)) != 0u
+	#error "SEQ_FIFO_FRAMES must be a power of two"
+#endif
+#define SEQ_FIFO_MASK    (SEQ_FIFO_FRAMES - 1u)
+
+static int16_t  g_fifo_l[SEQ_FIFO_FRAMES];
+static int16_t  g_fifo_r[SEQ_FIFO_FRAMES];
+static volatile uint32_t g_fifo_head;       /* writer index (producer) */
+static volatile uint32_t g_fifo_tail;       /* reader index (consumer) */
+
+static int16_t           g_last_l;          /* held on consumer underrun */
+static int16_t           g_last_r;
+
+static seq_key_cb        g_key_cb;          /* optional visualizer hook */
 
 /* ---- streaming helpers --------------------------------------------- */
 
@@ -108,21 +113,18 @@ synth_init(uint32_t sample_rate_hz)
 	g_loop    = 0;
 	g_playing = 0;
 
-	#ifdef SEQ_PLAYER_FIFO
-	fifo_init(&g_fifo, SEQ_FIFO_BYTES);
-	g_last_l = 0;
-	g_last_r = 0;
+	g_fifo_head = 0;
+	g_fifo_tail = 0;
+	g_last_l    = 0;
+	g_last_r    = 0;
 	/* g_key_cb is preserved across re-init so callers can install once */
-	#endif
 }
 
-#ifdef SEQ_PLAYER_FIFO
 void
 seq_set_key_cb(seq_key_cb cb)
 {
 	g_key_cb = cb;
 }
-#endif
 
 void
 seq_play_song(const opl_song* song, int loop)
@@ -249,73 +251,13 @@ seq_tick(uint32_t ms_elapsed)
 						   | ((code & 0x80) ? 0x100 : 0);
 			OPL3_WriteRegBuffered(&g_chip, reg, val);
 
-			#ifdef SEQ_PLAYER_FIFO
-
 			if (g_key_cb && (reg & 0xff) >= 0xB0 && (reg & 0xff) <= 0xB8)
 				g_key_cb(val & 0x1f);
-
-			#endif
 		}
 	}
 }
 
-#ifdef SEQ_PLAYER_FIFO
-
-SEQ_FAST_SECTION void
-synth_update(void)
-{
-	/*  Top up the sample FIFO with as many frames as currently fit.
-	    Runs at the sequencer cadence (typ. 1 ms), so any per-tick
-	    jitter in OPL3 cost is absorbed by the ring rather than
-	    starving the audio ISR.
-
-	    The `timeout` cap is a belt-and-braces safety net: if the
-	    audio ISR is somehow draining faster than we can produce, we
-	    refuse to spin forever in this call and yield to whatever is
-	    above us in the priority chain. */
-
-	int timeout = 1000;
-
-	while (FIFO_FREECOUNT(&g_fifo) >= SEQ_FRAME_BYTES) {
-		int16_t f[2];
-		OPL3_Generate(&g_chip, f);  /* f[0] = L, f[1] = R */
-
-		/*  Push the whole stereo frame in one buffered call.  The
-		    underlying fifo cnt+=len is non-atomic vs. the ISR's
-		    cnt-=len, so we gate IRQs around the put.  The window is
-		    tiny (a memcpy of 4 bytes + a counter add). */
-		__disable_irq();
-		(void)fifo_put_buf(&g_fifo, (uint8_t*)f, SEQ_FRAME_BYTES);
-		__enable_irq();
-
-		if (timeout == 0)
-			break;
-
-		timeout--;
-	}
-}
-
-SEQ_FAST_SECTION void
-synth_render_sample(int16_t* out_l, int16_t* out_r)
-{
-	/*  Pop one stereo frame.  On underrun (producer fell behind) hold
-	    the previous frame to avoid the click that a hard zero would
-	    produce. */
-	int16_t f[2];
-
-	if (fifo_get_buf(&g_fifo, (uint8_t*)f, SEQ_FRAME_BYTES) < 0) {
-		*out_l = g_last_l;
-		*out_r = g_last_r;
-
-	} else {
-		g_last_l = f[0];
-		g_last_r = f[1];
-		*out_l   = f[0];
-		*out_r   = f[1];
-	}
-}
-
-#else  /* !SEQ_PLAYER_FIFO -- simple inline render (PC build) */
+/* ---- inline render path ------------------------------------------- */
 
 void
 synth_render_sample(int16_t* out_l, int16_t* out_r)
@@ -326,4 +268,71 @@ synth_render_sample(int16_t* out_l, int16_t* out_r)
 	*out_r = f[1];
 }
 
-#endif
+/* ---- FIFO render path --------------------------------------------- */
+
+void
+synth_update_fifo(void)
+{
+	/*  Top up the FIFO with as many frames as currently fit.  Runs
+	    at the sequencer cadence (typ. 1 ms), so any per-tick jitter
+	    in OPL3 cost is absorbed by the ring rather than starving
+	    the audio ISR.
+
+	    The `timeout` cap is a belt-and-braces safety net: if the
+	    audio ISR is somehow draining faster than we can produce, we
+	    refuse to spin forever in this call and yield to whatever is
+	    above us in the priority chain. */
+
+	int timeout = (int)SEQ_FIFO_FRAMES;
+
+	for (;;) {
+		uint32_t head = g_fifo_head;
+		uint32_t tail = g_fifo_tail;
+		uint32_t used = (head - tail) & SEQ_FIFO_MASK;
+
+		if (used >= SEQ_FIFO_MASK)        /* one slot reserved as full marker */
+			break;
+
+		int16_t f[2];
+		OPL3_Generate(&g_chip, f);        /* f[0] = L, f[1] = R */
+
+		uint32_t slot = head & SEQ_FIFO_MASK;
+		g_fifo_l[slot] = f[0];
+		g_fifo_r[slot] = f[1];
+
+		/*  Publish the new frame.  On a single-core MCU plain
+		    stores are sufficient (the consumer can only observe
+		    head after the data stores have retired in program
+		    order); add a release barrier here if you ever run
+		    consumer and producer on different cores. */
+		g_fifo_head = head + 1u;
+
+		if (--timeout <= 0)
+			break;
+	}
+}
+
+void
+synth_get_fifo_sample(int16_t* out_l, int16_t* out_r)
+{
+	uint32_t head = g_fifo_head;
+	uint32_t tail = g_fifo_tail;
+
+	if (head == tail) {
+		/* underrun -- hold the previous frame to avoid a click */
+		*out_l = g_last_l;
+		*out_r = g_last_r;
+		return;
+	}
+
+	uint32_t slot = tail & SEQ_FIFO_MASK;
+	int16_t  l    = g_fifo_l[slot];
+	int16_t  r    = g_fifo_r[slot];
+
+	g_fifo_tail = tail + 1u;
+
+	g_last_l = l;
+	g_last_r = r;
+	*out_l   = l;
+	*out_r   = r;
+}

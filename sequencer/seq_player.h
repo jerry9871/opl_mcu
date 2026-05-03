@@ -130,37 +130,40 @@ void seq_tick(uint32_t ms_elapsed);
     Call from your DAC / I2S half-buffer IRQ.
     For mono output, mix:  out = (l + r) >> 1;
 
-    Two implementations live behind this signature, selected at compile
-    time:
-      - default (PC build): renders one frame inline via
-        OPL3_GenerateResampled().  Simple; no FIFO; the producer and
-        consumer are the same thread.
-      - -DSEQ_PLAYER_FIFO (MCU build): pops one frame from a sample
-        FIFO that synth_update() refills in a low-priority context.
-        On underrun the previous frame is held to avoid clicks.  See
-        synth_update() below. */
+    Inline path: renders one frame on the spot via
+    OPL3_GenerateResampled().  No FIFO; the producer and consumer
+    are the same thread.  This is what the PC demo uses and is also
+    fine on an MCU if your audio IRQ has the cycles.
+
+    For an alternative producer/consumer split (heavy synth runs in
+    a low-priority context, light ISR pops one ready frame), see
+    synth_update_fifo() / synth_get_fifo_sample() below.  Both APIs
+    are always compiled; pick whichever you call from your audio
+    IRQ and ignore the other. */
 void synth_render_sample(int16_t* out_l, int16_t* out_r);
 
-#ifdef SEQ_PLAYER_FIFO
-/*  -- MCU-only API ---------------------------------------------------
-    The FIFO build adds a producer/consumer split between the OPL3
-    synth and the audio ISR, plus a percussion-strike hook for a
-    visualizer LED.  Define SEQ_PLAYER_FIFO at compile time to enable
-    it.  Requires fifo.h and cmsis_gcc.h on the include path.       */
+/*  -- Optional FIFO path -------------------------------------------
+    A small lock-free SPSC ring of stereo frames lives inside
+    seq_player.c.  The producer (synth_update_fifo) and the consumer
+    (synth_get_fifo_sample) must each be called from a single
+    context, but the producer and consumer contexts can differ
+    (typical MCU split: producer in the sequencer task, consumer in
+    the DAC ISR).  No interrupt guards or CMSIS dependencies. */
 
-/*  Render OPL3 audio into the sample FIFO until it is full (or an
-    internal safety cap is hit).  Call from the same low-priority
-    context as seq_tick(), right after it.  This is where the heavy
-    OPL3 cost lives; it is intentionally separated from the audio ISR
-    so the ISR never blocks on it. */
-void synth_update(void);
+/*  Render OPL3 audio into the FIFO until it is full (or an internal
+    safety cap is hit).  Call from the same low-priority context as
+    seq_tick(), right after it. */
+void synth_update_fifo(void);
+
+/*  Pop one stereo frame from the FIFO.  On underrun (producer fell
+    behind) the previous frame is held to avoid clicks. */
+void synth_get_fifo_sample(int16_t* out_l, int16_t* out_r);
 
 /*  Optional percussion-strike hook.  Called from seq_tick() context
     every time a key-on/off byte is dispatched (registers 0xB0..0xB8).
     Useful to drive a visualizer LED.  Pass NULL to disable. */
 typedef void (*seq_key_cb)(uint8_t key_byte);
 void seq_set_key_cb(seq_key_cb cb);
-#endif
 
 #ifdef __cplusplus
 }
