@@ -33,6 +33,36 @@
 #include "seq_player.h"
 #include "opl3.h"
 
+/* ---- ISR guards ---------------------------------------------------- */
+
+/*  Two short critical sections inside this file must not be preempted
+    by the audio ISR:
+
+      - the OPL3_WriteRegBuffered() call in seq_tick(), because the
+        inline render path's audio ISR calls OPL3_GenerateResampled()
+        which reads the very chip state seq_tick is mutating;
+
+      - the ring-slot store + head publish in synth_update_fifo(),
+        because the FIFO render path's audio ISR calls
+        synth_get_fifo_sample() which reads head/tail and dereferences
+        the slot.
+
+    The hooks below are no-ops by default (PC build / non-MCU host).
+    On a Cortex-M target wire them to CMSIS, e.g. in a project header
+    or on the compile command line:
+
+        #define SEQ_ISR_DISABLE() __disable_irq()
+        #define SEQ_ISR_ENABLE()  __enable_irq()
+
+    Or, if you only need to mask a single high-priority audio IRQ,
+    use NVIC_DisableIRQ()/NVIC_EnableIRQ() for that vector. */
+#ifndef SEQ_ISR_DISABLE
+	#define SEQ_ISR_DISABLE() ((void)0)
+#endif
+#ifndef SEQ_ISR_ENABLE
+	#define SEQ_ISR_ENABLE()  ((void)0)
+#endif
+
 /* ---- module state -------------------------------------------------- */
 
 static opl3_chip          g_chip;
@@ -249,7 +279,15 @@ seq_tick(uint32_t ms_elapsed)
 			const uint8_t* cm = s ? s->data : g_codemap;
 			uint16_t reg = (uint16_t)cm[code & 0x7F]
 						   | ((code & 0x80) ? 0x100 : 0);
+
+			/*  Inline render path: the audio ISR may be reading chip
+			    state via OPL3_GenerateResampled() right now.  Mask it
+			    for the duration of the register write so the ISR
+			    never sees a half-updated operator/channel.  No-op on
+			    the FIFO path (the ISR doesn't touch chip state). */
+			SEQ_ISR_DISABLE();
 			OPL3_WriteRegBuffered(&g_chip, reg, val);
+			SEQ_ISR_ENABLE();
 
 			if (g_key_cb && (reg & 0xff) >= 0xB0 && (reg & 0xff) <= 0xB8)
 				g_key_cb(val & 0x1f);
@@ -297,15 +335,18 @@ synth_update_fifo(void)
 		OPL3_Generate(&g_chip, f);        /* f[0] = L, f[1] = R */
 
 		uint32_t slot = head & SEQ_FIFO_MASK;
+
+		/*  Mask the audio ISR while we publish the new frame.  The
+		    consumer reads tail-then-head-then-slot; if it sees the
+		    bumped head it must also see the slot stores, so the two
+		    have to land atomically from the ISR's point of view.
+		    The window is tiny (two int16 stores + one uint32 store).
+		    No-op on the inline render path (the FIFO is unused). */
+		SEQ_ISR_DISABLE();
 		g_fifo_l[slot] = f[0];
 		g_fifo_r[slot] = f[1];
-
-		/*  Publish the new frame.  On a single-core MCU plain
-		    stores are sufficient (the consumer can only observe
-		    head after the data stores have retired in program
-		    order); add a release barrier here if you ever run
-		    consumer and producer on different cores. */
-		g_fifo_head = head + 1u;
+		g_fifo_head    = head + 1u;
+		SEQ_ISR_ENABLE();
 
 		if (--timeout <= 0)
 			break;
