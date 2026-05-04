@@ -235,39 +235,21 @@ main(int argc, char** argv)
 	heatshrink_decoder* hs_dec = NULL;
 
 	if (dro) {
-		/*  Direct file path on the command line.  Both .dro and
-		    .dro_hs* go through dro_load*() into a flat opl_song +
-		    seq_play_song(); embedded packed songs are the only
-		    consumer of the streaming hs_stream path. */
-		const char* ext = strrchr(dro, '.');
-		int is_hs = ext && strncmp(ext, ".dro_hs", 7) == 0;
-
-		if (is_hs) {
-			if (dro_load_hs(dro, &dro_song) != 0) {
-				audio_close();
-				return 1;
-			}
-
-			dro_song_loaded = 1;
-			printf("  song        : %s (%u bytes decompressed, %u ms)\n",
-				   dro, dro_song.data_len, dro_song.total_ms);
-			printf("  loop        : %s\n",
-				   loop ? "yes (Ctrl+C to stop)" : "no");
-			seq_play_song(&dro_song, loop);
-
-		} else {
-			if (dro_load(dro, &dro_song) != 0) {
-				audio_close();
-				return 1;
-			}
-
-			dro_song_loaded = 1;
-			printf("  song        : %s (%u bytes packed, %u ms)\n",
-				   dro, dro_song.data_len, dro_song.total_ms);
-			printf("  loop        : %s\n",
-				   loop ? "yes (Ctrl+C to stop)" : "no");
-			seq_play_song(&dro_song, loop);
+		/*  Direct .dro file on the command line: load it into a
+		    flat opl_song and play.  No runtime ".dro_hs*" format --
+		    if you want compression, build a *_song.h via
+		    `tools/dro2hdr --hs` and link it in. */
+		if (dro_load(dro, &dro_song) != 0) {
+			audio_close();
+			return 1;
 		}
+
+		dro_song_loaded = 1;
+		printf("  song        : %s (%u bytes packed, %u ms)\n",
+			   dro, dro_song.data_len, dro_song.total_ms);
+		printf("  loop        : %s\n",
+			   loop ? "yes (Ctrl+C to stop)" : "no");
+		seq_play_song(&dro_song, loop);
 
 	} else if (picked->song_hs) {
 		printf("  song        : %s (%s, %u B compressed, %u ms, hs=w%d/l%d)\n",

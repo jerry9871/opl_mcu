@@ -62,27 +62,26 @@ opl/
 |
 +-- heatshrink/                 <-- portable streaming decompressor (PC + MCU)
 |   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink, unmodified
-|   +-- heatshrink_encoder.[ch]   (PC-only; only dro2hdr / dro_pack pull this in)
+|   +-- heatshrink_encoder.[ch]   (PC-only; only dro2hdr / hs_bench pull this in)
 |   +-- hs_stream.[ch]            Generic byte-stream pump on top of the decoder
 |   +-- heatshrink_config.h       Compile-time tuning (static vs dynamic alloc)
 |
 +-- songs/                      <-- + at least one *_song.h
 |   +-- opl_song_hs.h             Self-describing descriptor (hs_data + metadata)
 |   +-- *_song.h                  41 ready-to-link songs, heatshrink-packed (w13/l4)
-|   +-- *.dro / *.dro_hs13        Source DRO captures + runtime-loadable packed form
+|   +-- *.dro                     Source DRO captures (input to dro2hdr)
 |   +-- *.vgz                     Original VGM source files for the above
 |
 +-- demo_win/                   <-- Windows-only wrapper, NOT for the MCU
 |   +-- main.c                    Fake-ISR loop + curated SONGS[] list
 |   +-- audio.h                   Tiny audio-sink interface
 |   +-- audio_win.c               WinMM (waveOut) implementation
-|   +-- dro_load.[ch]             Load .dro / .dro_hs* files at runtime (PC only)
+|   +-- dro_load.[ch]             Load a .dro file at runtime (PC only)
 |
 +-- tools/                      <-- offline PC utilities
 |   +-- vgz2dro.c     / .exe      VGM/VGZ capture -> DRO v2
 |   +-- dro_opt.c     / .exe      Strip redundant register writes from a .dro
 |   +-- dro_loop3.c   / .exe      Loop-point detector
-|   +-- dro_pack.c    / .exe      DRO -> .dro_hs<W>l<L>  (runtime-loadable packed)
 |   +-- dro2hdr.c     / .exe      DRO -> embeddable C header (with --hs for packed)
 |   +-- hs_bench.c    / .exe      Sweep heatshrink window/lookahead for best ratio
 |   +-- regen_songs.ps1           Re-pack every songs/*.dro into songs/*_song.h
@@ -440,7 +439,6 @@ opl_demo_nuked.exe eric --once    play one of the curated entries once and exit
 opl_demo_nuked.exe metallica      loop "Master of Puppets"
 
 opl_demo_nuked.exe path\to\file.dro       play any DOSBox DRO v2 capture
-opl_demo_nuked.exe path\to\file.dro_hs13  play a heatshrink-packed DRO at runtime
 opl_demo_mame.exe  metallica --bench 30   render 30 s of song with no audio,
                                           print render time / CPU% (no real-time pacing)
 ```
@@ -593,23 +591,26 @@ friendly short name.
 
 ### Compressed songs (`opl_song_hs` + `hs_stream`)
 
-Two delivery channels share the same player:
+There is exactly **one** delivery channel: `dro2hdr --hs` reads a
+`.dro` and emits a `*_song.h` containing an `opl_song_hs` struct
+(metadata) plus a heatshrink-compressed `codemap+stream` payload.
+`#include` the header, point an `hs_stream` at `song->hs_data`,
+call `seq_play_stream`. No malloc, no file I/O, no header parsing.
 
-| Channel                    | Producer                           | Runtime                                                                                                                                                              |
-| -------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Embedded in flash**      | `dro2hdr --hs` -> `*_song.h`       | `#include` it, point an `hs_stream` at `song->hs_data`, call `seq_play_stream`. No malloc.                                                                           |
-| **Loaded at runtime (PC)** | `dro_pack` -> `file.dro_hs<W>l<L>` | [`demo_win/dro_load.c`](demo_win/dro_load.c) `dro_load_hs()` decompresses the whole file into an `opl_song` (PC has the RAM, keeps the file format self-describing). |
+The payload is **header-stripped at compile time**: every field the
+player needs at runtime (`codemap_len`, `short_code`, `long_code`,
+`total_ms`) is already a field of the emitted `opl_song_hs` struct,
+so the original 26-byte DRO v2 file header would be dead weight
+inside the compressed stream. The first decompressed byte is
+`codemap[0]`.
 
-The embedded path is **header-stripped at compile time**: `dro2hdr
---hs` no longer wraps the codemap+stream in the original 26-byte DRO
-v2 file header, since every field the player needs at runtime
-(`codemap_len`, `short_code`, `long_code`, `total_ms`) is already a
-field of the emitted `opl_song_hs` struct. The MCU therefore never
-parses any header — the first decompressed byte is `codemap[0]`.
-The runtime PC path keeps the on-disk header because that file
-format must remain self-describing.
+For PC-side ad-hoc playback the demo also accepts a `.dro` path on
+the command line ([`demo_win/dro_load.c`](demo_win/dro_load.c)).
+That path is uncompressed -- if you want compression at PC runtime,
+build a `*_song.h` and link it. Keeping a single representation
+end-to-end keeps the demo, and the docs, simple.
 
-Both go through:
+The decode pipeline:
 
 ```
   bytes ?? hs_stream_next ??> heatshrink_decoder ??> seq_play_stream ??> OPL3
@@ -901,7 +902,6 @@ be chained pipeline-style.
 | `tools\dro_opt.exe`   | Drops register writes that don't change anything observable (re-writing the same value, writes shadowed by an immediately following one). Typically shaves 5–15 % off a capture before any compression. |
 | `tools\dro_loop3.exe` | Finds the loop point (start of the second repetition) and writes a trimmed `.dro` containing exactly one loop iteration. Heuristic: scans the OPL register stream for the longest self-similar suffix.  |
 | `tools\dro2hdr.exe`   | Converts a `.dro` into an embeddable C header. Pass `--hs` (default w13/l4) to heatshrink-pack the payload and emit an `opl_song_hs`; without it you get the plain `opl_song` form.                     |
-| `tools\dro_pack.exe`  | Same heatshrink encoder as `dro2hdr --hs`, but writes a runtime-loadable `*.dro_hs<W>l<L>` file instead of a `.h`. Use this when you want to ship songs as data files (e.g. on an SD card).             |
 | `tools\hs_bench.exe`  | Sweeps a `.dro` through every reasonable `(window, lookahead)` combination and reports the smallest output. Use it once per song corpus to pick the global default; w13/l4 is rarely beaten.            |
 
 Typical pipeline for a looping song captured as VGZ:
@@ -953,8 +953,8 @@ Most tools are plain C99 with no dependencies; rebuild any of them with:
 gcc -O2 -Wall -Wextra -std=c99 tools\<name>.c -o tools\<name>.exe
 ```
 
-The three that touch heatshrink (`dro2hdr`, `dro_pack`, `hs_bench`)
-need the encoder linked in too:
+The two that touch heatshrink (`dro2hdr`, `hs_bench`) need the
+encoder linked in too:
 
 ```
 gcc -O2 -Wall -Wextra -std=c99 -Iheatshrink -DHEATSHRINK_DYNAMIC_ALLOC=1 ^
