@@ -10,9 +10,10 @@ your PC is what your MCU will play.
 > Sound Blaster 16 / AdLib Gold) is a beautiful piece of late-80s
 > hardware whose music â€” fast attack envelopes, gritty FM timbres, that
 > distinctive ~50 kHz sample rate â€” is impossible to reproduce
-> convincingly with any other technique. With ~80 KB of flash for the
-> code plus whatever your songs need, and one spare CPU, you can have
-> authentic OPL3 audio on a $3 board.
+> convincingly with any other technique. With ~30–80 KB of flash for
+> the code (depending on which core you pick) plus whatever your
+> songs need, and one spare CPU, you can have authentic OPL3 audio on
+> a $3 board.
 
 The included demo plays the title-screen music from the 1993 DOS game
 **Prehistorik 2**, captured live from the original `PRE2.EXE` running
@@ -68,7 +69,7 @@ opl/
 |
 +-- songs/                      <-- + at least one *_song.h
 |   +-- opl_song_hs.h             Self-describing descriptor (hs_data + metadata)
-|   +-- *_song.h                  41 ready-to-link songs, heatshrink-packed (w13/l4)
+|   +-- *_song.h                  39 ready-to-link songs, heatshrink-packed (w13/l4)
 |   +-- *.dro                     Source DRO captures (input to dro2hdr)
 |   +-- *.vgz                     Original VGM source files for the above
 |
@@ -444,13 +445,14 @@ opl_demo_mame.exe  metallica --bench 30   render 30 s of song with no audio,
 ```
 
 The build produces one binary per PC-ready core:
-`opl_demo_nuked.exe`, `opl_demo_opal.exe`, and
-`opl_demo_mame.exe`. All three take the same command line; the
-banner prints `core: <name>` so you know which engine you're hearing.
+`opl_demo_nuked.exe`, `opl_demo_opal.exe`, `opl_demo_mame.exe`,
+`opl_demo_adlibemu.exe`, and `opl_demo_dbopl.exe`. All five take
+the same command line; the banner prints `core: <name>` so you
+know which engine you're hearing.
 
 The curated short-name list lives at the top of
 [`demo_win/main.c`](demo_win/main.c) (one `#include` + one row in
-`SONGS[]` per song); add a row to expose any of the 41 packed songs
+`SONGS[]` per song); add a row to expose any of the 39 packed songs
 in `songs/`.
 
 ---
@@ -558,7 +560,7 @@ or, to mask only the audio IRQ vector:
 ### Songs
 
 A song is a `static const opl_song` or `static const opl_song_hs` (in
-a `*_song.h` file under [`songs/`](songs/)). All 41 songs shipped
+a `*_song.h` file under [`songs/`](songs/)). All 39 songs shipped
 with this repo are the heatshrink-packed `opl_song_hs` flavour;
 plain `opl_song` is still supported for cases where you don't want
 the decoder dependency.
@@ -642,10 +644,12 @@ the OPL register stream — see the comments in
 | `heatshrink/heatshrink_common.h`, `heatshrink_config.h`             | Decoder build-time config                               |
 | `heatshrink/hs_stream.c`, `.h`                                      | Generic byte pump on top of the decoder                 |
 
-`<core>` is one of `nuked/`, `nuked_optimized/`, or `opal/`. The
-sequencer is the same file in all three cases; you select the engine
-by putting one core's folder on the include path and linking that
-folder's `.c` files.
+`<core>` is any of `nuked/`, `nuked_optimized/`, `opal/`,
+`mame/`, `adlibemu/`, or `dbopl/`. The sequencer is the same file
+in every case; you select the engine by putting one core's folder
+on the include path and linking that folder's `.c` files. See
+[Cores at a glance](#cores-at-a-glance) for footprint / license
+/ feature tradeoffs.
 
 For the heatshrink decoder use the **static-allocation** flags so it
 takes no malloc and one BSS-resident instance:
@@ -683,27 +687,34 @@ in `opal/` instead.)
 That's everything. No malloc, no stdio, no `FILE *`, no float math, no
 threads. Pure C99.
 
-### Footprint (`nuked_optimized/` on Cortex-M4, `-Os`)
+### Footprint
 
-- **Flash, code:** ~50 KB (Nuked-OPL3 + seq_player), plus ~1.5 KB if
-  you link in the heatshrink decoder + `hs_stream`.
-- **Flash, song (plain `opl_song`):** ~2 bytes per OPL register write —
-  e.g. Prehistorik 2 loop ~41 KB, DOOM E1M1 ~34 KB, Wacky Wheels
-  intro ~2.5 KB. Songs scale with length and density.
+Per-core `.text` / `.bss` / per-chip RAM / cycles-per-frame are in
+[Cores at a glance](#cores-at-a-glance) and the
+[Measured CPU cost](#measured-cpu-cost) table; pick a core there first
+and bring its numbers down here. The fixed costs that are the
+**same across cores** are:
+
+- **Flash, sequencer:** ~3 KB (`seq_player.c`, both render paths
+  compiled in).
+- **Flash, heatshrink decoder + `hs_stream`:** ~1.5 KB code +
+  ~8.2 KB BSS for the 8 KB sliding window (`HEATSHRINK_STATIC_*`
+  flags above). Skip both if you only use plain `opl_song`.
+- **Flash, song (plain `opl_song`):** ~2 bytes per OPL register
+  write — e.g. Prehistorik 2 loop ~41 KB, DOOM E1M1 ~34 KB, Wacky
+  Wheels intro ~2.5 KB. Songs scale with length and density.
 - **Flash, song (packed `opl_song_hs`, w13/l4):** typically
-  30–40 % of the plain size. Across the 41 songs that ship in this
-  repo the average ratio is **31 %** (2.7 MB plain ? 842 KB packed).
-  Decoder needs ~8.2 KB BSS for its 8 KB sliding window.
-- **RAM:** `sizeof(opl3_chip)` ? 14 KB (the bulk is the 1024-entry
-  write buffer; you can shrink it by editing `OPL_WRITEBUF_SIZE` in
-  `opl3.h` if you don't use buffered writes). Plus a few KB for the
-  sample FIFO (`SEQ_FIFO_FRAMES` in `sequencer/seq_player.c`, default ~4 KB)
-  and a few hundred bytes of player state.
-- **CPU:** `OPL3_Generate` is roughly 350–500 cycles per stereo frame
-  on Cortex-M4. At the native 49 716 Hz that's about 17–25 MHz of
-  effective CPU — comfortable on STM32F4/F7/H7, RP2040, ESP32, etc.
-  (The reference `nuked/` port is somewhat heavier and goes through
-  `OPL3_GenerateResampled` instead; see _Sample-rate choices_ below.)
+  30–40 % of the plain size. Across the 39 songs that ship in this
+  repo the average ratio is **~31 %**.
+- **RAM, sample FIFO:** `SEQ_FIFO_FRAMES * 4` bytes (default 1024
+  frames = 4 KB). Tune with `-DSEQ_FIFO_FRAMES=N`.
+- **RAM, player state:** a few hundred bytes inside `seq_player.c`.
+
+The one variable cost is `sizeof(opl3_chip)` and the per-frame
+cycle count, both of which are core-dependent — see the tables
+above. As a rough guide, the cheapest combo (`dbopl` + plain
+`opl_song`) fits in **~30 KB code + ~5 KB RAM per chip** and
+renders at ~85 ns/frame on x64.
 
 ### Skeleton (`nuked_optimized/` on MCU, packed song)
 
@@ -723,13 +734,11 @@ static hs_stream          g_hs;
 static opl_song_stream    g_stream;
 
 static int  hs_byte (void* u)         { (void)u; return hs_stream_next(&g_hs); }
-static void hs_rewind(void* u)        { (void)u; hs_stream_rewind(&g_hs);
-                                        for (int i = 0; i < 26; i++) hs_stream_next(&g_hs); }
+static void hs_rewind(void* u)        { (void)u; hs_stream_rewind(&g_hs); }
 
 static void play(const opl_song_hs* s, int loop)
 {
     hs_stream_init(&g_hs, s->hs_data, s->hs_len, &g_dec);
-    for (int i = 0; i < 26; i++) hs_stream_next(&g_hs);   /* skip DRO header */
     g_stream = (opl_song_stream){
         .next_byte = hs_byte, .rewind = hs_rewind, .user = NULL,
         .codemap_len = s->codemap_len, .short_code = s->short_code,
