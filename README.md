@@ -928,7 +928,6 @@ These don't modify the file; they help you decide _where_ to trim.
 
 | Tool                                                | Purpose                                                                                                                    |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `tools\dro_analyze.exe file.dro`                    | One-page summary: length, register-write density, channels touched, percussion usage. Run this first on any new capture.   |
 | `tools\dro_dump.exe file.dro [start_ev] [count]`    | Pretty-print the decoded register-write stream with timestamps. Used to eyeball where a section starts.                    |
 | `tools\dro_segments.exe file.dro`                   | Splits the timeline at long silent gaps; useful for separating stinger / loop / outro within a single capture.             |
 | `tools\dro_perc.exe file.dro`                       | Lists every percussion strike with its timestamp — handy for finding bar boundaries in songs whose drums lock to the beat. |
@@ -941,7 +940,7 @@ These rewrite the file.
 
 | Tool                                                   | Purpose                                                                                                                         |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `tools\dro_slice.exe in.dro out.dro start_ms end_ms`   | Cuts out a `[start_ms, end_ms)` window. Use to crop intros/outros once `dro_analyze` or `dro_dump` told you where to cut.       |
+| `tools\dro_slice.exe in.dro out.dro start_ms end_ms`   | Cuts out a `[start_ms, end_ms)` window. Use to crop intros/outros once `dro_dump` told you where to cut.                        |
 | `tools\dro_evrange.exe in.dro out.dro start_ev end_ev` | Same idea but in event-index space.                                                                                             |
 | `tools\dro_loop.exe`, `dro_loop2.exe`, `dro_loop3.exe` | Three generations of the loop-finder; `dro_loop3` is the current default. The older ones are kept for diffing on tricky inputs. |
 
