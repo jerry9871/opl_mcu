@@ -46,7 +46,7 @@
  *   * Hot per-sample LUTs (logsinrom/exprom/mt/kslrom/kslshift/eg_incstep)
        dropped `const` so they land in `.data` (RAM) for zero-wait-state
        access vs. flash with potential wait states.
- *   * Hot functions get __attribute__((section(".ccm"))) so they execute
+ *   * Hot functions get HOT_FUNC so they execute
        from CCM (Core-Coupled Memory), avoiding flash-bus contention.
  *   * Inline helpers get always_inline so the dispatch chain
        ProcessSlot ? SlotCalcFB/EnvelopeCalc/PhaseGenerate/SlotGenerate
@@ -75,11 +75,11 @@
        dead work; we skip it.
  *   * Sustain fast-path in EnvelopeCalc: for sustained-tone slots in
        steady-state sustain (reg_type=1), the rate is provably 0 and
-       eg_rout never moves — early-return after the eg_out sum.
+       eg_rout never moves ï¿½ early-return after the eg_out sum.
 
      Caches
      -------
- *   * eg_static = (reg_tl<<2) + (eg_ksl >> kslshift[reg_ksl]) — recomputed
+ *   * eg_static = (reg_tl<<2) + (eg_ksl >> kslshift[reg_ksl]) ï¿½ recomputed
        in OPL3_EnvelopeUpdateKSL (called by SlotWrite40 + ChannelWriteA0/B0).
  *   * phase_step = cached pg_phase increment for non-vibrato slots.
        Invalidated on writes to reg_mult, f_num, block.
@@ -88,12 +88,12 @@
      ------------------------
  *   * envelope_sin[] function-pointer table replaced by switch in
        SlotGenerate so the chosen waveform inlines into the slot body.
- *   * Rhythm + noise LFSR gated by `if (chip->rhy & 0x20)` — when rhythm
+ *   * Rhythm + noise LFSR gated by `if (chip->rhy & 0x20)` ï¿½ when rhythm
        mode is off (typical FM music) we skip ~30 cyc/slot/sample.
  *   * Fused L+R mix loop: original Nuked walks the 18 channels twice with
        a 1-sample R-side delay quirk.  We fuse them into one loop, dropping
-       the inter-channel delay (28 µs at 36 kHz — inaudible).
- *   * eg_timer narrowed from uint64_t to uint32_t — only low 13 bits are
+       the inter-channel delay (28 ï¿½s at 36 kHz ï¿½ inaudible).
+ *   * eg_timer narrowed from uint64_t to uint32_t ï¿½ only low 13 bits are
        consumed and natural 32-bit wrap matches the original 36-bit
        wrap-and-reset behaviour.
 
@@ -117,16 +117,16 @@
      Audible compromises summary
      ----------------------------
      The only changes that are not strictly bit-exact vs. Nuked are:
-       1. EnvelopeCalc sustain fast-path — skips a corner-case eg_rout
+       1. EnvelopeCalc sustain fast-path ï¿½ skips a corner-case eg_rout
           clamp from 0x1f8..0x1fe to 0x1ff in the saturated-silence range.
           Inaudible (output already at noise floor).
-       2. Silent-slot skip in ProcessSlot — pauses pg_phase accumulation
+       2. Silent-slot skip in ProcessSlot ï¿½ pauses pg_phase accumulation
           and noise-LFSR advancement for fully-released slots.  Inaudible
           for melodic music; rhythm-mode percussion gets a different
           statistical instance of the same noise color (still white).
-       3. Fused L+R mix loop — removes the chip-level 1-sample L/R skew.
-          28 µs delta at 36 kHz, inaudible.
-       4. OPL_MAX_CHANNELS / OPL_FORCE_OPL2 / OPL_MONO — opt-in compile
+       3. Fused L+R mix loop ï¿½ removes the chip-level 1-sample L/R skew.
+          28 ï¿½s delta at 36 kHz, inaudible.
+       4. OPL_MAX_CHANNELS / OPL_FORCE_OPL2 / OPL_MONO ï¿½ opt-in compile
           flags with documented behavioural changes.
     ============================================================================ */
 
@@ -137,7 +137,23 @@
 
 #include "cmsis_gcc.h"
 
-/* OPT: Cortex-M4 saturating signed clamp — 1 cycle vs ~3 for if/else. */
+/*  HOT_FUNC: place hot functions in a fast memory section (e.g. STM32
+    CCM RAM) to avoid flash-bus contention with DMA / interrupt fetches.
+    Default is `.ccm` on GCC/Clang; override at build time, e.g.
+      -DHOT_FUNC='__attribute__((section(".ccm2")))'
+    or disable entirely with
+      -DHOT_FUNC=
+    On non-GCC toolchains (or when the linker script has no .ccm), set
+    HOT_FUNC to empty so the function lands in flash like normal. */
+#ifndef HOT_FUNC
+	#if defined(__GNUC__) || defined(__clang__)
+		#define HOT_FUNC HOT_FUNC
+	#else
+		#define HOT_FUNC
+	#endif
+#endif
+
+/* OPT: Cortex-M4 saturating signed clamp ï¿½ 1 cycle vs ~3 for if/else. */
 #if defined(__ARM_ARCH) && (__ARM_ARCH >= 7)
 	#include <arm_acle.h>
 	#define OPL3_CLIP16(x) ((int16_t)__SSAT((int32_t)(x), 16))
@@ -158,7 +174,7 @@
 
 
 /* Quirk: Some FM channels are output one sample later on the left side than the right. */
-/* OPT: forced off for MCU build — saves ~5–10% by collapsing the 4-batch slot loop into one. */
+/* OPT: forced off for MCU build ï¿½ saves ~5ï¿½10% by collapsing the 4-batch slot loop into one. */
 #ifndef OPL_QUIRK_CHANNELSAMPLEDELAY
 	#define OPL_QUIRK_CHANNELSAMPLEDELAY 0
 #endif
@@ -486,7 +502,7 @@ enum envelope_gen_num {
 	envelope_gen_num_release = 3
 };
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_EnvelopeUpdateKSL(opl3_slot* slot)
 {
 	int16_t ksl = (kslrom[slot->channel->f_num >> 6u] << 2)
@@ -658,7 +674,7 @@ OPL3_EnvelopeCalc(opl3_slot* slot)
 		slot->eg_gen = envelope_gen_num_release;
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_EnvelopeKeyOn(opl3_slot* slot, uint8_t type)
 {
 	slot->key |= type;
@@ -682,7 +698,7 @@ OPL3_EnvelopeKeyOn(opl3_slot* slot, uint8_t type)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_EnvelopeKeyOff(opl3_slot* slot, uint8_t type)
 {
 	slot->key &= ~type;
@@ -707,7 +723,7 @@ OPL3_PhaseGenerate(opl3_slot* slot)
 	f_num = slot->channel->f_num;
 
 	if (slot->reg_vib) {
-		/* Vibrato modifies f_num per-sample — cannot use cached step. */
+		/* Vibrato modifies f_num per-sample ï¿½ cannot use cached step. */
 		uint32_t basefreq;
 		int8_t range;
 		uint8_t vibpos;
@@ -732,7 +748,7 @@ OPL3_PhaseGenerate(opl3_slot* slot)
 		slot->phase_step_valid = 0; /* recompute next time vib is off */
 
 	} else {
-		/* OPT: cached phase increment — saves a multiply + 2 shifts/loads per sample. */
+		/* OPT: cached phase increment ï¿½ saves a multiply + 2 shifts/loads per sample. */
 		if (!slot->phase_step_valid) {
 			uint32_t basefreq = (f_num << slot->channel->block) >> 1;
 			slot->phase_step = (basefreq * mt[slot->reg_mult]) >> 1;
@@ -807,7 +823,7 @@ OPL3_PhaseGenerate(opl3_slot* slot)
     Slot
 */
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_SlotWrite20(opl3_slot* slot, uint8_t data)
 {
 	if ((data >> 7) & 0x01)
@@ -823,7 +839,7 @@ OPL3_SlotWrite20(opl3_slot* slot, uint8_t data)
 	slot->phase_step_valid = 0; /* OPT: reg_mult changed */
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_SlotWrite40(opl3_slot* slot, uint8_t data)
 {
 	slot->reg_ksl = (data >> 6) & 0x03;
@@ -831,14 +847,14 @@ OPL3_SlotWrite40(opl3_slot* slot, uint8_t data)
 	OPL3_EnvelopeUpdateKSL(slot); /* refreshes eg_static too */
 }
 
-__attribute__((section(".ccm")))static void
+HOT_FUNC static void
 OPL3_SlotWrite60(opl3_slot* slot, uint8_t data)
 {
 	slot->reg_ar = (data >> 4) & 0x0f;
 	slot->reg_dr = data & 0x0f;
 }
 
-__attribute__((section(".ccm")))static void
+HOT_FUNC static void
 OPL3_SlotWrite80(opl3_slot* slot, uint8_t data)
 {
 	slot->reg_sl = (data >> 4) & 0x0f;
@@ -849,7 +865,7 @@ OPL3_SlotWrite80(opl3_slot* slot, uint8_t data)
 	slot->reg_rr = data & 0x0f;
 }
 
-__attribute__((section(".ccm")))static void
+HOT_FUNC static void
 OPL3_SlotWriteE0(opl3_slot* slot, uint8_t data)
 {
 	slot->reg_wf = data & 0x07;
@@ -881,7 +897,7 @@ OPL3_SlotGenerate(opl3_slot* slot)
 
 			#if OPL_FORCE_OPL2
 
-		default: /* wf 3 — wf 4-7 unreachable when newm forced to 0 */
+		default: /* wf 3 ï¿½ wf 4-7 unreachable when newm forced to 0 */
 			r = OPL3_EnvelopeCalcSin3(phase, env);
 			break;
 			#else
@@ -931,10 +947,10 @@ OPL3_SlotCalcFB(opl3_slot* slot)
     Channel
 */
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelSetupAlg(opl3_channel* channel);
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelUpdateRhythm(opl3_chip* chip, uint8_t data)
 {
 	opl3_channel* channel6;
@@ -1016,7 +1032,7 @@ OPL3_ChannelUpdateRhythm(opl3_chip* chip, uint8_t data)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelWriteA0(opl3_channel* channel, uint8_t data)
 {
 	if (channel->chip->newm && channel->chtype == ch_4op2)
@@ -1027,7 +1043,7 @@ OPL3_ChannelWriteA0(opl3_channel* channel, uint8_t data)
 				   | ((channel->f_num >> (0x09 - channel->chip->nts)) & 0x01);
 	OPL3_EnvelopeUpdateKSL(channel->slotz[0]);
 	OPL3_EnvelopeUpdateKSL(channel->slotz[1]);
-	/* OPT: f_num changed — invalidate cached phase_step on both slots. */
+	/* OPT: f_num changed ï¿½ invalidate cached phase_step on both slots. */
 	channel->slotz[0]->phase_step_valid = 0;
 	channel->slotz[1]->phase_step_valid = 0;
 
@@ -1041,7 +1057,7 @@ OPL3_ChannelWriteA0(opl3_channel* channel, uint8_t data)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelWriteB0(opl3_channel* channel, uint8_t data)
 {
 	if (channel->chip->newm && channel->chtype == ch_4op2)
@@ -1067,7 +1083,7 @@ OPL3_ChannelWriteB0(opl3_channel* channel, uint8_t data)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelSetupAlg(opl3_channel* channel)
 {
 	if (channel->chtype == ch_drum) {
@@ -1170,7 +1186,7 @@ OPL3_ChannelSetupAlg(opl3_channel* channel)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelUpdateAlg(opl3_channel* channel)
 {
 	channel->alg = channel->con;
@@ -1193,7 +1209,7 @@ OPL3_ChannelUpdateAlg(opl3_channel* channel)
 		OPL3_ChannelSetupAlg(channel);
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelWriteC0(opl3_channel* channel, uint8_t data)
 {
 	channel->fb = (data & 0x0e) >> 1;
@@ -1233,7 +1249,7 @@ OPL3_ChannelWriteD0(opl3_channel* channel, uint8_t data)
 }
 #endif
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelKeyOn(opl3_channel* channel)
 {
 	if (channel->chip->newm) {
@@ -1254,7 +1270,7 @@ OPL3_ChannelKeyOn(opl3_channel* channel)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelKeyOff(opl3_channel* channel)
 {
 	if (channel->chip->newm) {
@@ -1275,7 +1291,7 @@ OPL3_ChannelKeyOff(opl3_channel* channel)
 	}
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ChannelSet4Op(opl3_chip* chip, uint8_t data)
 {
 	uint8_t bit;
@@ -1301,7 +1317,7 @@ OPL3_ChannelSet4Op(opl3_chip* chip, uint8_t data)
 	}
 }
 
-__attribute__((section(".ccm"))) static int16_t
+HOT_FUNC static int16_t
 OPL3_ClipSample(int32_t sample)
 {
 	if (sample > 32767)
@@ -1313,13 +1329,13 @@ OPL3_ClipSample(int32_t sample)
 	return (int16_t)sample;
 }
 
-__attribute__((section(".ccm"))) static void
+HOT_FUNC static void
 OPL3_ProcessSlot(opl3_slot* slot)
 {
 	/*  OPT: skip slots that are fully released and silent.
 	    In release with eg_rout latched to 0x1ff (the EnvelopeCalc 'envelope off'
 	    sticky state), the slot will produce 0 forever until key-on flips slot->key.
-	    For typical FM music ~80–90% of the 36 slots are in this state at any time. */
+	    For typical FM music ~80ï¿½90% of the 36 slots are in this state at any time. */
 	if (slot->key == 0
 		&& slot->eg_gen == envelope_gen_num_release
 		&& (slot->eg_rout & 0x1f8) == 0x1f8) {
@@ -1349,7 +1365,7 @@ OPL3_ProcessSlot(opl3_slot* slot)
 	}
 
 	/*  OPT: only the modulator slot (slotz[0]) ever has its fbmod read by
-	    the channel algorithm routings.  Carriers' fbmod is dead state —
+	    the channel algorithm routings.  Carriers' fbmod is dead state ï¿½
 	    skip the FB calc on them entirely (~10 cyc per carrier per sample). */
 	if (slot->is_modulator)
 		OPL3_SlotCalcFB(slot);
@@ -1359,8 +1375,7 @@ OPL3_ProcessSlot(opl3_slot* slot)
 	OPL3_SlotGenerate(slot);
 }
 
-__attribute__((section(".ccm")))
-static inline __attribute__((always_inline)) void
+HOT_FUNC static inline __attribute__((always_inline)) void
 OPL3_Generate4Ch(opl3_chip* chip, int16_t* buf4)
 {
 	opl3_channel* channel;
@@ -1372,7 +1387,7 @@ OPL3_Generate4Ch(opl3_chip* chip, int16_t* buf4)
 
 	/*  OPT: when no slot is producing sound, skip slot processing and channel
 	    mixing entirely.  slot->out is held at 0 by ProcessSlot's transition path,
-	    so the channel mix outputs are also 0 — we just zero mixbuff directly. */
+	    so the channel mix outputs are also 0 ï¿½ we just zero mixbuff directly. */
 	if (any_active) {
 		#if OPL_QUIRK_CHANNELSAMPLEDELAY
 
@@ -1403,7 +1418,7 @@ OPL3_Generate4Ch(opl3_chip* chip, int16_t* buf4)
 		    eliminates 18 channel struct walks + 18 sets of 4 pointer
 		    indirections + 18 silent-channel-skip checks (~150 cyc/sample)
 		    at the cost of removing that 1-sample inter-channel delay
-		    (28 µs at 36 kHz \u2014 inaudible). */
+		    (28 ï¿½s at 36 kHz \u2014 inaudible). */
 		int32_t mixL_f = 0, mixL_r = 0;
 		#if !OPL_MONO
 		int32_t mixR_f = 0, mixR_r = 0;
@@ -1414,7 +1429,7 @@ OPL3_Generate4Ch(opl3_chip* chip, int16_t* buf4)
 
 			/*  OPT: for 2-op / drum channels all out[] pointers reference
 			    only the channel's own slots (or zeromod).  If both own slots
-			    are silent the result is guaranteed 0 — skip the 4 loads + 3
+			    are silent the result is guaranteed 0 ï¿½ skip the 4 loads + 3
 			    adds.  4-op channels can have out[] referencing the paired
 			    channel's slots, so we conservatively don't skip them. */
 			#if OPL_FORCE_OPL2
@@ -1547,14 +1562,14 @@ OPL3_Generate4Ch(opl3_chip* chip, int16_t* buf4)
 
 		writebuf->reg &= 0x1ff;
 		OPL3_WriteReg(chip, writebuf->reg, writebuf->data);
-		/* OPT: SIZE is power-of-two now — mask is free vs. udiv. */
+		/* OPT: SIZE is power-of-two now ï¿½ mask is free vs. udiv. */
 		chip->writebuf_cur = (chip->writebuf_cur + 1) & (OPL_WRITEBUF_SIZE - 1);
 	}
 
 	chip->writebuf_samplecnt++;
 }
 
-__attribute__((section(".ccm"))) void
+HOT_FUNC void
 OPL3_Generate(opl3_chip* chip, int16_t* buf)
 {
 	int16_t samples[4];
@@ -1565,7 +1580,7 @@ OPL3_Generate(opl3_chip* chip, int16_t* buf)
 	#endif
 }
 
-__attribute__((section(".ccm"))) void
+HOT_FUNC void
 OPL3_Generate4ChResampled(opl3_chip* chip, int16_t* buf4)
 {
 	while (chip->samplecnt >= chip->rateratio) {
@@ -1588,7 +1603,7 @@ OPL3_Generate4ChResampled(opl3_chip* chip, int16_t* buf4)
 	chip->samplecnt += 1 << RSM_FRAC;
 }
 
-__attribute__((section(".ccm"))) void
+HOT_FUNC void
 OPL3_GenerateResampled(opl3_chip* chip, int16_t* buf)
 {
 	int16_t samples[4];
@@ -1692,7 +1707,7 @@ OPL3_WriteReg(opl3_chip* chip, uint16_t reg, uint8_t v)
 
 					case 0x05:
 						#if OPL_FORCE_OPL2
-						chip->newm = 0; /* OPT: pin to 0 — disables 4-op + wf 4-7 */
+						chip->newm = 0; /* OPT: pin to 0 ï¿½ disables 4-op + wf 4-7 */
 						#else
 						chip->newm = v & 0x01;
 						#endif

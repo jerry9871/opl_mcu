@@ -56,11 +56,26 @@
 
     Or, if you only need to mask a single high-priority audio IRQ,
     use NVIC_DisableIRQ()/NVIC_EnableIRQ() for that vector. */
+
+#include "mcu.h"
+
 #ifndef SEQ_ISR_DISABLE
 	#define SEQ_ISR_DISABLE() ((void)0)
 #endif
 #ifndef SEQ_ISR_ENABLE
 	#define SEQ_ISR_ENABLE()  ((void)0)
+#endif
+
+/*  Place the audio-ISR-side render helpers in a fast memory section
+    (e.g. STM32 CCM RAM) to avoid flash-bus contention with DMA and
+    other interrupt fetches.  Defaults to `.ccm` on GCC/Clang; override
+    at build time via -DHOT_FUNC=... or disable with -DHOT_FUNC=. */
+#ifndef HOT_FUNC
+	#if defined(__GNUC__) || defined(__clang__)
+		#define HOT_FUNC __attribute__((section(".ccm")))
+	#else
+		#define HOT_FUNC
+	#endif
 #endif
 
 /* ---- resampling switch -------------------------------------------- */
@@ -332,7 +347,7 @@ seq_tick(uint32_t ms_elapsed)
 
 /* ---- inline render path ------------------------------------------- */
 
-void
+HOT_FUNC void
 synth_render_sample(int16_t* out_l, int16_t* out_r)
 {
 	int16_t f[2];
@@ -343,7 +358,7 @@ synth_render_sample(int16_t* out_l, int16_t* out_r)
 
 /* ---- FIFO render path --------------------------------------------- */
 
-void
+HOT_FUNC void
 synth_update_fifo(void)
 {
 	/*  Top up the FIFO with as many frames as currently fit.  Runs
@@ -388,7 +403,7 @@ synth_update_fifo(void)
 	}
 }
 
-void
+HOT_FUNC void
 synth_get_fifo_sample(int16_t* out_l, int16_t* out_r)
 {
 	uint32_t head = g_fifo_head;

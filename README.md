@@ -57,7 +57,12 @@ opl/
 |   |   +-- opl3.h                  header-only `OPL3_*` adapter (no .c shim)
 |   |
 |   +-- dbopl/                    DOSBox dbopl, C port (GPLv2 -- not for closed firmware)
-|       +-- dbopl.c                 Hand-port of DOSBox's dbopl.cpp to plain C99
+|   |   +-- dbopl.c                 Hand-port of DOSBox's dbopl.cpp to plain C99
+|   |   +-- opl3.h                  header-only `OPL3_*` adapter (no .c shim)
+|   |   +-- LICENSE.txt
+|   |
+|   +-- dbopl_optimized/          MCU-tuned variant of the dbopl port (MCU-only build)
+|       +-- dbopl.c                 Same C port + HOT_INLINE / HOT_FUNC (CCM placement)
 |       +-- opl3.h                  header-only `OPL3_*` adapter (no .c shim)
 |       +-- LICENSE.txt
 |
@@ -104,7 +109,8 @@ engine is a self-contained "new folder + adapter header" exercise; no
 changes anywhere else.
 
 Five engines are wired up today (`nuked_optimized` is an MCU-only
-fork of `nuked`, not a separate engine). All emulate the same Yamaha
+fork of `nuked`, and `dbopl_optimized` is an MCU-only fork of `dbopl`,
+so they don't count as separate engines). All emulate the same Yamaha
 YMF262 (OPL3); they differ in _how faithful_ the emulation is and
 what that costs in cycles and flash.
 
@@ -162,6 +168,17 @@ of `adlibemu` if your project doesn't already link it.
   - - Compile-time profiles (OPL2 only, mono, channel cap) for tight MCUs.
   - ? Pulls in CMSIS (`cmsis_gcc.h`); not built on PC.
   - ? Trades a few per-sample bits when the OPL2/mono knobs are turned on.
+
+- **`dbopl_optimized`** — _dbopl, MCU-tuned (GPLv2)._
+  - - Same audible output as `dbopl`; same WAVE_TABLEMUL inner loop.
+  - - Adds `HOT_INLINE` on hot helpers and `HOT_FUNC` (CCM placement)
+      on the per-sample dispatch targets (`vol_*`, `synth_*`,
+      `chip_generate_block2/3`, `OPL3_Generate*`, `op_set_state`).
+  - - One build flag (`-DHOT_FUNC=...`) propagates the same CCM
+      placement to the sequencer and to `nuked_optimized` -- pick
+      a core, set the flag once, done.
+  - ? Inherits dbopl's GPLv2; not for closed-source firmware.
+  - ? MCU-only build (defaults assume the linker script defines `.ccm`).
 
 - **`opal`** — _small and quick._
   - - ~12 KB code, simple integer inner loop.
@@ -399,8 +416,8 @@ if you have an FPU — see its section).
 | If…                                                                  | Use                                                                                   |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | You want to verify "did I capture this song right?"                  | `nuked` — the audio reference                                                         |
-| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame`, `adlibemu`, `dbopl`, `nuked`, or `nuked_optimized` (not `opal`)               |
-| You're on an MCU with ?512 KB flash and ship GPL-compatible code     | `dbopl` — fastest and smallest per-chip RAM                                           |
+| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame`, `adlibemu`, `dbopl`(`_optimized`), `nuked`, or `nuked_optimized` (not `opal`) |
+| You're on an MCU and ship GPL-compatible code                        | `dbopl_optimized` — fastest, smallest per-chip RAM, CCM-placed hot path               |
 | You're on an MCU with ?512 KB flash and need a permissive license    | `mame` — second fastest, BSD-style                                                    |
 | You're on an MCU with ?256 KB flash                                  | `opal` (no percussion) or `nuked_optimized` (default profile)                         |
 | You're targeting strict bit-accuracy on an MCU                       | `nuked_optimized` with all defaults disabled, or plain `nuked` if you have the cycles |
@@ -645,10 +662,10 @@ the OPL register stream — see the comments in
 | `heatshrink/hs_stream.c`, `.h`                                      | Generic byte pump on top of the decoder                 |
 
 `<core>` is any of `nuked/`, `nuked_optimized/`, `opal/`,
-`mame/`, `adlibemu/`, or `dbopl/`. The sequencer is the same file
-in every case; you select the engine by putting one core's folder
-on the include path and linking that folder's `.c` files. See
-[Cores at a glance](#cores-at-a-glance) for footprint / license
+`mame/`, `adlibemu/`, `dbopl/`, or `dbopl_optimized/`. The sequencer
+is the same file in every case; you select the engine by putting one
+core's folder on the include path and linking that folder's `.c` files.
+See [Cores at a glance](#cores-at-a-glance) for footprint / license
 / feature tradeoffs.
 
 For the heatshrink decoder use the **static-allocation** flags so it
@@ -676,6 +693,52 @@ takes no malloc and one BSS-resident instance:
 That costs ~8.2 KB of BSS for the decoder window plus ~1.5 KB of
 flash for the decoder code itself; in exchange every `*_song.h` in
 this repo shrinks to 30–40 % of its plain size.
+
+### CCM / fast-RAM placement (`HOT_FUNC`)
+
+The `_optimized` cores (`nuked_optimized/`, `dbopl_optimized/`) and
+the sequencer's audio-ISR-side render helpers all funnel their hot
+functions through a single overridable macro:
+
+```
+#ifndef HOT_FUNC
+  #if defined(__GNUC__) || defined(__clang__)
+    #define HOT_FUNC __attribute__((section(".ccm")))
+  #else
+    #define HOT_FUNC
+  #endif
+#endif
+```
+
+Default on GCC/Clang is `.ccm` (STM32F3/F4/G4 Core-Coupled Memory);
+on other toolchains it silently degrades to a no-op and the function
+lands in flash like normal. Override it once at the top-level
+Makefile to point at whatever fast-RAM section your linker script
+defines, e.g.
+
+```
+'-DHOT_FUNC=__attribute__((section(".ccm")))'
+```
+
+or disable it entirely with `-DHOT_FUNC=`. The same flag covers
+[`sequencer/seq_player.c`](sequencer/seq_player.c) (`synth_render_sample`,
+`synth_update_fifo`, `synth_get_fifo_sample`),
+[`cores/nuked_optimized/opl3.c`](cores/nuked_optimized/opl3.c)
+(~26 hot functions) and
+[`cores/dbopl_optimized/dbopl.c`](cores/dbopl_optimized/dbopl.c)
+(~22 hot functions) -- pick a core, set the flag once, done.
+
+Why it matters on Cortex-M: when DMA, the audio ISR and the synth
+render loop all contend for the single flash bus, the synth gets
+stalled waiting for instruction fetches. Moving the per-sample hot
+path into CCM removes the contention; on STM32G4 @ 144 MHz this is
+the difference between "keeps up" and "drops the occasional sample
+in dense passages".
+
+If your linker script has no `.ccm` section the link will fail at
+the orphan-section warning -- either add one, change the section
+name (`-DHOT_FUNC='__attribute__((section(".my_fast_ram")))'`), or
+disable the placement (`-DHOT_FUNC=`).
 
 If you don't want to ship heatshrink at all, regenerate the songs
 you need without `--hs` (`tools/dro2hdr.exe in.dro out.h sym`) and
