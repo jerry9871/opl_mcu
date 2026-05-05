@@ -661,6 +661,18 @@ takes no malloc and one BSS-resident instance:
 -DHEATSHRINK_STATIC_INPUT_BUFFER_SIZE=64
 ```
 
+> **Critical: every TU that sees `heatshrink_decoder.h` must be
+> compiled with the same `HEATSHRINK_STATIC_WINDOW_BITS` value used
+> when the song was packed.** The struct embeds a fixed-size window
+> buffer whose size is derived from this macro, so a mismatch
+> silently shrinks the buffer in some translation units while the
+> decoder code keeps writing past it. The result is a song that
+> plays correctly for the first few hundred bytes (small backrefs
+> stay within the truncated window) and then degrades into garbage
+> as soon as the encoder emits a backref past the truncated window
+> size. Put the `-D` flags into your top-level Makefile's global
+> `CFLAGS`/`UDEFS`, not in a per-file rule.
+
 That costs ~8.2 KB of BSS for the decoder window plus ~1.5 KB of
 flash for the decoder code itself; in exchange every `*_song.h` in
 this repo shrinks to 30–40 % of its plain size.
