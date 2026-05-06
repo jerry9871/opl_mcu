@@ -220,6 +220,12 @@ of `adlibemu` if your project doesn't already link it.
     core if you ship closed-source firmware; use `mame` (BSD) or
     `adlibemu` (LGPL) instead.
   - ? Not bit-exact (DOSBox heuristic envelope model).
+  - ? **~1.6× slower on percussion-heavy songs** than on pure
+    melodic content (the `0xBD` rhythm-mode dispatcher bypasses
+    the WAVE\*TABLEMUL hot path). On Cortex-M this can be the
+    difference between meeting and missing the audio ISR deadline
+    -- prefer `mame` for percussion-heavy material on tight MCUs.
+    See [Measured CPU cost](#measured-cpu-cost) for numbers.
 
 #### How an OPL3 emulator spends its time
 
@@ -379,25 +385,45 @@ The number you get is the cost of `synth_render_sample` +
 `seq_tick`, i.e. exactly what would run inside the MCU's DAC and
 SysTick ISRs.
 
-Sample run on a modern x64 laptop, 60 s of `metallica` (heavy
-melodic load) at 49 716 Hz stereo, 3 runs averaged (variance ? 3%):
+Sample run on a modern x64 laptop at 49 716 Hz stereo, 30 s per
+song, 3 runs averaged (variance ? 3%). Two contrasting workloads:
+`metallica` is heavy melodic OPL3 with **no rhythm mode**;
+`eric` (Eric Prydz - Call on Me) is **percussion-heavy** (BD + SD
 
-| core              | ns per stereo frame | realtime ratio | host CPU% |
-| ----------------- | ------------------: | -------------: | --------: |
-| `nuked`           |                 481 |          42.5× |     2.35% |
-| `nuked_optimized` |                 297 |          68.8× |     1.45% |
-| `adlibemu`        |                 239 |          85.3× |     1.17% |
-| `opal`            |                 222 |          92.4× |     1.09% |
-| `mame`            |                 192 |         106.0× |     0.94% |
-| `dbopl`           |              **85** |       **240×** |     0.42% |
+- HH on every beat through the `0xBD` rhythm path).
+
+| core              | metallica ns/frame | eric ns/frame | percussion penalty | metallica realtime | eric realtime |
+| ----------------- | -----------------: | ------------: | -----------------: | -----------------: | ------------: |
+| `nuked`           |                481 |           454 |              0.94x |              42.5× |         44.4× |
+| `nuked_optimized` |                297 |             - |                  - |              68.8× |             - |
+| `adlibemu`        |                239 |           186 |              0.78x |              85.3× |        108.4× |
+| `opal`            |                222 |           229 |              1.03x |              92.4× |         88.0× |
+| `mame`            |                192 |           188 |              0.98x |             106.0× |        107.2× |
+| `dbopl`           |             **73** |           116 |          **1.59x** |           **272×** |      **174×** |
+
+The surprise is **`dbopl`'s 1.6x penalty on percussion** while the
+other integer cores stay flat (or even speed up, in adlibemu's case,
+because its FP envelope path runs less often when rhythm-mode
+operators bypass envelope re-derivation). dbopl's hot path is the
+WAVE\*TABLEMUL one-load-one-multiply trick; rhythm mode (`0xBD`
+BD/SD/TT/TC/HH) routes through a separate dispatcher with extra
+noise-LFSR updates, hi-hat XOR mixing and snare phase logic. On
+x64 those branches and 64-bit shifts are essentially free; on
+Cortex-M they cost real cycles. **For percussion-heavy songs on M4,
+budget ~1.5x dbopl's metallica figure** -- which can push it from
+"comfortable margin" into "misses ISR deadlines", as one MCU port
+of this repo found out the hard way. `mame` is the safe pick for
+percussion-heavy material on tight MCUs (only 2% slower on `eric`,
+still BSD-licensed, second fastest overall).
 
 (`nuked_optimized` measured separately on a 9-ch / OPL2 / mono
-profile build; the others are full 18-ch OPL3 stereo. `dbopl` is a
-C port of DOSBox's `dbopl.cpp`; the C version runs ~20% faster than
-the original C++ at -O2 because gcc specialises the small
-`HOT_INLINE` body wrappers as cleanly as it does template
-instantiations -- and free-function pointers are slightly cheaper to
-dispatch than C++ member-function pointers.)
+profile build; the OPL2 profile silently ignores OPL3 rhythm so
+the `eric` cell would be apples-to-oranges. `dbopl` is a C port of
+DOSBox's `dbopl.cpp`; the C version runs ~20% faster than the
+original C++ at -O2 because gcc specialises the small `HOT_INLINE`
+body wrappers as cleanly as it does template instantiations -- and
+free-function pointers are slightly cheaper to dispatch than C++
+member-function pointers.)
 
 Don't read "`mame` beats `nuked`" as a statement about the chips —
 it's a statement about which inner loop x64 happens to schedule
@@ -413,16 +439,16 @@ if you have an FPU — see its section).
 
 #### Picking a core
 
-| If…                                                                  | Use                                                                                   |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| You want to verify "did I capture this song right?"                  | `nuked` — the audio reference                                                         |
-| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame`, `adlibemu`, `dbopl`(`_optimized`), `nuked`, or `nuked_optimized` (not `opal`) |
-| You're on an MCU and ship GPL-compatible code                        | `dbopl_optimized` — fastest, smallest per-chip RAM, CCM-placed hot path               |
-| You're on an MCU with ?512 KB flash and need a permissive license    | `mame` — second fastest, BSD-style                                                    |
-| You're on an MCU with ?256 KB flash                                  | `opal` (no percussion) or `nuked_optimized` (default profile)                         |
-| You're targeting strict bit-accuracy on an MCU                       | `nuked_optimized` with all defaults disabled, or plain `nuked` if you have the cycles |
-| You want a DOSBox-era second opinion on tone (M4F or higher)         | `adlibemu` — LGPL alternative to `dbopl` from the same family                         |
-| You need to A/B sound quality                                        | Build all five PC binaries, listen — `--once` makes it easy                           |
+| If…                                                                  | Use                                                                                                                                                  |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| You want to verify "did I capture this song right?"                  | `nuked` — the audio reference                                                                                                                        |
+| The song uses rhythm-mode percussion (id Software, Prehistorik 2, …) | `mame` (flattest cost), `adlibemu`, `nuked`, or `nuked_optimized`; `dbopl` works but pays a ~1.6× penalty on percussion (see CPU table); not `opal`. |
+| You're on an MCU and ship GPL-compatible code                        | `dbopl_optimized` — fastest, smallest per-chip RAM, CCM-placed hot path                                                                              |
+| You're on an MCU with ?512 KB flash and need a permissive license    | `mame` — second fastest, BSD-style                                                                                                                   |
+| You're on an MCU with ?256 KB flash                                  | `opal` (no percussion) or `nuked_optimized` (default profile)                                                                                        |
+| You're targeting strict bit-accuracy on an MCU                       | `nuked_optimized` with all defaults disabled, or plain `nuked` if you have the cycles                                                                |
+| You want a DOSBox-era second opinion on tone (M4F or higher)         | `adlibemu` — LGPL alternative to `dbopl` from the same family                                                                                        |
+| You need to A/B sound quality                                        | Build all five PC binaries, listen — `--once` makes it easy                                                                                          |
 
 #### Why not other engines?
 
