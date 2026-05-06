@@ -51,6 +51,7 @@
 #include "deadmau5_ghosts_n_stuff_song.h"
 #include "tony_igy_astronomia_song.h"
 #include "atb_9_pm_till_i_come_song.h"
+#include "quazar_funky_stars_song.h"
 
 #define SAMPLE_RATE   49716   /* OPL3 native rate -- no resampling */
 #define TICK_MS       1       /* sequencer tick granularity              */
@@ -72,6 +73,7 @@ static const song_t SONGS[] = {
 	{ "deadmau5",  "deadmau5 - Ghosts'n'Stuff",        &deadmau5_ghosts_n_stuff,      0 },
 	{ "astronomia", "Tony Igy - Astronomia",            &tony_igy_astronomia,          0 },
 	{ "atb",       "ATB - 9 PM (Till I Come)",         &atb_9_pm_till_i_come,         0 },
+	{ "quazar",    "Quazar - Funky Stars",             &quazar_funky_stars,           0 },
 };
 #define N_SONGS ((int)(sizeof(SONGS)/sizeof(SONGS[0])))
 
