@@ -57,7 +57,11 @@
     Or, if you only need to mask a single high-priority audio IRQ,
     use NVIC_DisableIRQ()/NVIC_EnableIRQ() for that vector. */
 
-#include "mcu.h"
+#if defined(__has_include)
+	#if __has_include("mcu.h")
+		#include "mcu.h"
+	#endif
+#endif
 
 #ifndef SEQ_ISR_DISABLE
 	#define SEQ_ISR_DISABLE() ((void)0)
