@@ -67,10 +67,10 @@ opl/
 |       +-- LICENSE.txt
 |
 +-- heatshrink/                 <-- portable streaming decompressor (PC + MCU)
-|   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink, unmodified
+|   +-- heatshrink_decoder.[ch]   Atomic Object's heatshrink (decoder unmodified)
 |   +-- heatshrink_encoder.[ch]   (PC-only; only dro2hdr / hs_bench pull this in)
+|   +-- heatshrink_config.h       Decoder build-time config (locally patched: HEATSHRINK_STATIC_* are #ifndef-guarded so -D overrides reach every TU)
 |   +-- hs_stream.[ch]            Generic byte-stream pump on top of the decoder
-|   +-- heatshrink_config.h       Compile-time tuning (static vs dynamic alloc)
 |
 +-- songs/                      <-- + at least one *_song.h
 |   +-- opl_song_hs.h             Self-describing descriptor (hs_data + metadata)
@@ -1053,10 +1053,13 @@ gcc -O2 -Wall -Wextra -std=c99 -Iheatshrink -DHEATSHRINK_DYNAMIC_ALLOC=1 ^
   the MAME team, OPLx decap project, and others whose work made the
   emulation possible.
 - **heatshrink** (`heatshrink/heatshrink_*.[ch]`) — © Atomic Object,
-  **ISC license**. Unmodified upstream from
-  <https://github.com/atomicobject/heatshrink>. The `hs_stream.[ch]`
-  pump on top of it is original to this repo and is under the same
-  permissive terms as everything else here.
+  **ISC license**. Decoder/encoder taken unmodified from
+  <https://github.com/atomicobject/heatshrink>; `heatshrink_config.h`
+  carries one local patch that `#ifndef`-guards the
+  `HEATSHRINK_STATIC_*` macros so `-D` overrides actually reach every
+  translation unit (see commit `bcb7ded` for the failure mode it
+  fixes). The `hs_stream.[ch]` pump on top of it is original to this
+  repo and is under the same permissive terms as everything else here.
 - **Game music captures** — the `.dro` / generated `.h` files in this
   repo are derived from games whose music remains © their respective
   rightsholders (Titus Interactive for _Prehistorik 2_, id Software for
