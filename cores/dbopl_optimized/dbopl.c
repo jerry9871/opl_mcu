@@ -1582,6 +1582,49 @@ init_tables(void)
 
 /* ===== Chip setup ======================================================== */
 
+/*  Rate-independent part of chip setup: fourMask layout + register-file
+    reset sweep.  Called from chip_setup() and OPL3_ResetFast(). */
+static void
+chip_setup_static(Chip* chip)
+{
+	/* Four-op channel mask layout (matches the OPL3 register 0x104 bits) */
+	chip->chan[ 0].fourMask = 0x00 | (1 << 0);
+	chip->chan[ 1].fourMask = 0x80 | (1 << 0);
+	chip->chan[ 2].fourMask = 0x00 | (1 << 1);
+	chip->chan[ 3].fourMask = 0x80 | (1 << 1);
+	chip->chan[ 4].fourMask = 0x00 | (1 << 2);
+	chip->chan[ 5].fourMask = 0x80 | (1 << 2);
+
+	chip->chan[ 9].fourMask = 0x00 | (1 << 3);
+	chip->chan[10].fourMask = 0x80 | (1 << 3);
+	chip->chan[11].fourMask = 0x00 | (1 << 4);
+	chip->chan[12].fourMask = 0x80 | (1 << 4);
+	chip->chan[13].fourMask = 0x00 | (1 << 5);
+	chip->chan[14].fourMask = 0x80 | (1 << 5);
+
+	chip->chan[ 6].fourMask = 0x40;
+	chip->chan[ 7].fourMask = 0x40;
+	chip->chan[ 8].fourMask = 0x40;
+
+	/* Reset register file -- once in OPL3 mode, once in OPL2 mode. */
+	chip_write_reg(chip, 0x105, 0x1);
+
+	for (unsigned i = 0; i < 512; i++) {
+		if (i == 0x105)
+			continue;
+
+		chip_write_reg(chip, i, 0xff);
+		chip_write_reg(chip, i,  0x0);
+	}
+
+	chip_write_reg(chip, 0x105, 0x0);
+
+	for (unsigned i = 0; i < 255; i++) {
+		chip_write_reg(chip, i, 0xff);
+		chip_write_reg(chip, i,  0x0);
+	}
+}
+
 static void
 chip_setup(Chip* chip, uint32_t rate)
 {
@@ -1658,43 +1701,9 @@ chip_setup(Chip* chip, uint32_t rate)
 	for (uint8_t i = 62; i < 76; i++)
 		chip->attackRates[i] = 8u << RATE_SH;
 
-	/* Four-op channel mask layout (matches the OPL3 register 0x104 bits) */
-	chip->chan[ 0].fourMask = 0x00 | (1 << 0);
-	chip->chan[ 1].fourMask = 0x80 | (1 << 0);
-	chip->chan[ 2].fourMask = 0x00 | (1 << 1);
-	chip->chan[ 3].fourMask = 0x80 | (1 << 1);
-	chip->chan[ 4].fourMask = 0x00 | (1 << 2);
-	chip->chan[ 5].fourMask = 0x80 | (1 << 2);
-
-	chip->chan[ 9].fourMask = 0x00 | (1 << 3);
-	chip->chan[10].fourMask = 0x80 | (1 << 3);
-	chip->chan[11].fourMask = 0x00 | (1 << 4);
-	chip->chan[12].fourMask = 0x80 | (1 << 4);
-	chip->chan[13].fourMask = 0x00 | (1 << 5);
-	chip->chan[14].fourMask = 0x80 | (1 << 5);
-
-	chip->chan[ 6].fourMask = 0x40;
-	chip->chan[ 7].fourMask = 0x40;
-	chip->chan[ 8].fourMask = 0x40;
-
-	/* Reset register file -- once in OPL3 mode, once in OPL2 mode. */
-	chip_write_reg(chip, 0x105, 0x1);
-
-	for (unsigned i = 0; i < 512; i++) {
-		if (i == 0x105)
-			continue;
-
-		chip_write_reg(chip, i, 0xff);
-		chip_write_reg(chip, i,  0x0);
-	}
-
-	chip_write_reg(chip, 0x105, 0x0);
-
-	for (unsigned i = 0; i < 255; i++) {
-		chip_write_reg(chip, i, 0xff);
-		chip_write_reg(chip, i,  0x0);
-	}
+	chip_setup_static(chip);
 }
+
 
 static void
 chip_init(Chip* chip, int opl3Mode)
@@ -1727,8 +1736,38 @@ OPL3_Reset(opl3_chip* chip, uint32_t samplerate)
 				   "DBOPL_CHIP_BYTES is too small for the current Chip layout; "
 				   "bump it in cores/dbopl/opl3.h");
 
-	init_tables();
 	Chip* c = (Chip*)chip->storage;
+
+	if (samplerate == 0) {
+		/*  Fast path: reuse the rate-dependent tables from the previous
+		    OPL3_Reset() call (noiseAdd, lfoAdd, freqMul, linearRates,
+		    attackRates).  Skips init_tables() and the attack-rate binary
+		    search in chip_setup().  Only valid when the sample rate has
+		    not changed -- use for song switching, not first-time init. */
+		uint32_t save_noiseAdd = c->noiseAdd;
+		uint32_t save_lfoAdd   = c->lfoAdd;
+		uint32_t save_freqMul[16];
+		uint32_t save_linearRates[76];
+		uint32_t save_attackRates[76];
+		memcpy(save_freqMul,     c->freqMul,     sizeof(c->freqMul));
+		memcpy(save_linearRates, c->linearRates, sizeof(c->linearRates));
+		memcpy(save_attackRates, c->attackRates, sizeof(c->attackRates));
+
+		chip_init(c, /*opl3Mode=*/1);
+
+		c->noiseAdd   = save_noiseAdd;
+		c->noiseValue = 1;
+		c->lfoAdd     = save_lfoAdd;
+		memcpy(c->freqMul,     save_freqMul,     sizeof(c->freqMul));
+		memcpy(c->linearRates, save_linearRates, sizeof(c->linearRates));
+		memcpy(c->attackRates, save_attackRates, sizeof(c->attackRates));
+
+		chip_setup_static(c);
+		return;
+	}
+
+	/*  Full init: (re)compute all rate-dependent tables. */
+	init_tables();
 	chip_init(c, /*opl3Mode=*/1);
 	chip_setup(c, samplerate);
 	/*  Do NOT auto-enable the OPL3 NEW bit here.  Once NEW is set, dbopl

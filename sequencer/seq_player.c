@@ -188,6 +188,7 @@ stream_load_codemap(void)
 void
 synth_init(uint32_t sample_rate_hz)
 {
+	SEQ_ISR_DISABLE();
 	OPL3_Reset(&g_chip, sample_rate_hz);
 	g_song    = 0;
 	g_stream  = 0;
@@ -201,6 +202,7 @@ synth_init(uint32_t sample_rate_hz)
 	g_fifo_tail = 0;
 	g_last_l    = 0;
 	g_last_r    = 0;
+	SEQ_ISR_ENABLE();
 	/* g_key_cb is preserved across re-init so callers can install once */
 }
 

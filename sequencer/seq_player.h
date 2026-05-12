@@ -94,9 +94,19 @@ void seq_play_stream(const opl_song_stream* stream, int loop);
 
 /* ---- one-time initialization ---- */
 
-/*  Initialize the OPL3 synth and the player state.
-    Call once at boot. sample_rate_hz must equal the rate at which you
-    will subsequently call synth_render_sample() (e.g. 20000 for 20 kHz). */
+/*  Initialize or reset the OPL3 synth and the player state.
+
+    Pass the audio ISR rate (e.g. SystemCoreClock / DRIVER_PERIOD) for
+    first-time boot init or when the sample rate changes.
+
+    Pass sample_rate_hz == 0 for a fast song-switch reset: the chip is
+    returned to its default state without recomputing the rate-dependent
+    tables (attack-rate binary search etc.).  Supported by dbopl_optimized;
+    on other cores (nuked, opal) OPL3_Reset() performs a full reset, which
+    is already inexpensive.  Safe to call from the sequencer task; the audio
+    ISR is masked internally for the duration of the reset.
+
+    g_key_cb is preserved across all calls so callers can install it once. */
 void synth_init(uint32_t sample_rate_hz);
 
 /* ---- sequence control ---- */
