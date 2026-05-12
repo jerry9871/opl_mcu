@@ -1715,6 +1715,34 @@ chip_init(Chip* chip, int opl3Mode)
 		ch_init(&chip->chan[i]);
 }
 
+/*  Reset channel/operator state and chip scalars without touching the
+    rate-dependent tables (noiseAdd, lfoAdd, freqMul, linearRates,
+    attackRates).  Used by the samplerate==0 fast path of OPL3_Reset(). */
+static void
+chip_reset_dynamic(Chip* chip)
+{
+	for (int i = 0; i < 18; i++)
+		ch_init(&chip->chan[i]);
+
+	chip->lfoCounter      = 0;
+	chip->noiseCounter    = 0;
+	chip->noiseValue      = 1;
+	chip->reg104          = 0;
+	chip->reg08           = 0;
+	chip->reg04           = 0;
+	chip->regBD           = 0;
+	chip->vibratoIndex    = 0;
+	chip->tremoloIndex    = 0;
+	chip->vibratoSign     = 0;
+	chip->vibratoShift    = 0;
+	chip->tremoloValue    = 0;
+	chip->vibratoStrength = 0;
+	chip->tremoloStrength = 0;
+	chip->waveFormMask    = 0;
+	chip->opl3Active      = 0;
+	chip->opl3Mode        = 1;
+}
+
 /* ===== Public OPL3 facade (matches cores/<other>/opl3.h API) ============= */
 
 static int16_t
@@ -1739,29 +1767,9 @@ OPL3_Reset(opl3_chip* chip, uint32_t samplerate)
 	Chip* c = (Chip*)chip->storage;
 
 	if (samplerate == 0) {
-		/*  Fast path: reuse the rate-dependent tables from the previous
-		    OPL3_Reset() call (noiseAdd, lfoAdd, freqMul, linearRates,
-		    attackRates).  Skips init_tables() and the attack-rate binary
-		    search in chip_setup().  Only valid when the sample rate has
-		    not changed -- use for song switching, not first-time init. */
-		uint32_t save_noiseAdd = c->noiseAdd;
-		uint32_t save_lfoAdd   = c->lfoAdd;
-		uint32_t save_freqMul[16];
-		uint32_t save_linearRates[76];
-		uint32_t save_attackRates[76];
-		memcpy(save_freqMul,     c->freqMul,     sizeof(c->freqMul));
-		memcpy(save_linearRates, c->linearRates, sizeof(c->linearRates));
-		memcpy(save_attackRates, c->attackRates, sizeof(c->attackRates));
-
-		chip_init(c, /*opl3Mode=*/1);
-
-		c->noiseAdd   = save_noiseAdd;
-		c->noiseValue = 1;
-		c->lfoAdd     = save_lfoAdd;
-		memcpy(c->freqMul,     save_freqMul,     sizeof(c->freqMul));
-		memcpy(c->linearRates, save_linearRates, sizeof(c->linearRates));
-		memcpy(c->attackRates, save_attackRates, sizeof(c->attackRates));
-
+		/*  Fast path: rate-dependent tables are left untouched; only
+		    channel/operator state and chip scalars are reset. */
+		chip_reset_dynamic(c);
 		chip_setup_static(c);
 		return;
 	}
