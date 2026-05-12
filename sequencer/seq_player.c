@@ -249,6 +249,8 @@ seq_is_playing(void)
 void
 seq_silence(void)
 {
+	SEQ_ISR_DISABLE();
+
 	/*  Key-off all 18 OPL3 channels (registers 0xB0..0xB8 on both ports)
 	    and disable the rhythm part. */
 	for (uint16_t r = 0xB0; r <= 0xB8; r++)
@@ -258,6 +260,7 @@ seq_silence(void)
 		OPL3_WriteReg(&g_chip, r | 0x100, 0);
 
 	OPL3_WriteReg(&g_chip, 0xBD, 0);
+	SEQ_ISR_ENABLE();
 }
 
 void
