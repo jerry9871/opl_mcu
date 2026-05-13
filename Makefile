@@ -86,7 +86,11 @@ run: opl_demo_nuked.exe
 
 songs: ; powershell -ExecutionPolicy Bypass -File tools/regen_songs.ps1
 
+# Download additional famous OPL packs from VGMRips and regenerate headers.
+# Edit tools/download_packs.ps1 to add more packs.
+download: ; powershell -ExecutionPolicy Bypass -File tools/download_packs.ps1
+
 clean:
 	-del /Q opl_demo*.exe 2>nul
 
-.PHONY: all run clean songs nuked opal mame adlibemu dbopl
+.PHONY: all run clean songs download nuked opal mame adlibemu dbopl

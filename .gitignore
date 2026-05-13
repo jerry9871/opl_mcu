@@ -38,4 +38,8 @@ out.log
 
 _commitmsg.txt
 
+# Temporary download artifacts (tools/download_packs.ps1)
+songs/*.zip
+songs/_dl_tmp/
+
 # Temporary benchmark-only core (GPLv2, not redistributed)
